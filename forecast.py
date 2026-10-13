@@ -22,6 +22,19 @@ def forecast_sales(csv_file):
             print("❌ At least two distinct months are required for a forecast.")
             return
         df = df.sort_values("month")
+        df = df.copy()
+        for column in ("month", "sales"):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+        if df.empty or df[["month", "sales"]].isna().any().any():
+            print("❌ Sales history must contain numeric month and sales values.")
+            return
+        if not all(pd.notna(value) and abs(float(value)) != float("inf") for value in df[["month", "sales"]].to_numpy().ravel()):
+            print("❌ Month and sales values must be finite numbers.")
+            return
+        if df["month"].nunique() < 2:
+            print("❌ At least two distinct months are required for a forecast.")
+            return
+        df = df.sort_values("month")
         X = df[["month"]]
         y = df["sales"]
 
