@@ -1,63 +1,61 @@
+import math
+import sys
+
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-import sys
+
+REQUIRED_COLUMNS = {"month", "sales"}
+
+
+def load_sales_history(csv_file):
+    """Load and validate monthly sales data, returning it in month order."""
+    df = pd.read_csv(csv_file)
+    missing = REQUIRED_COLUMNS.difference(df.columns)
+    if missing:
+        raise ValueError(f"CSV must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
+
+    df = df.loc[:, ["month", "sales"]].copy()
+    for column in ("month", "sales"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    if df.empty or df.isna().any().any():
+        raise ValueError("Sales history must contain numeric month and sales values.")
+    if not all(math.isfinite(float(value)) for value in df.to_numpy().ravel()):
+        raise ValueError("Month and sales values must be finite numbers.")
+    if df["month"].nunique() < 2:
+        raise ValueError("At least two distinct months are required for a forecast.")
+    if df["month"].duplicated().any():
+        raise ValueError("Each month must appear only once in the sales history.")
+    return df.sort_values("month").reset_index(drop=True)
+
+
+def predict_next_sales(df):
+    """Fit a linear trend and predict sales for the period after the latest month."""
+    model = LinearRegression()
+    model.fit(df[["month"]], df["sales"])
+    next_month = float(df["month"].iloc[-1]) + 1
+    return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
+
 
 def forecast_sales(csv_file):
     try:
-        df = pd.read_csv(csv_file)
-        if not {"month", "sales"}.issubset(df.columns):
-            print("❌ CSV must contain 'month' and 'sales' columns.")
-            return
-        
-        df = df.copy()
-        for column in ("month", "sales"):
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-        if df.empty or df[["month", "sales"]].isna().any().any():
-            print("❌ Sales history must contain numeric month and sales values.")
-            return
-        if not all(pd.notna(value) and abs(float(value)) != float("inf") for value in df[["month", "sales"]].to_numpy().ravel()):
-            print("❌ Month and sales values must be finite numbers.")
-            return
-        if df["month"].nunique() < 2:
-            print("❌ At least two distinct months are required for a forecast.")
-            return
-        df = df.sort_values("month")
-        df = df.copy()
-        for column in ("month", "sales"):
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-        if df.empty or df[["month", "sales"]].isna().any().any():
-            print("❌ Sales history must contain numeric month and sales values.")
-            return
-        if not all(pd.notna(value) and abs(float(value)) != float("inf") for value in df[["month", "sales"]].to_numpy().ravel()):
-            print("❌ Month and sales values must be finite numbers.")
-            return
-        if df["month"].nunique() < 2:
-            print("❌ At least two distinct months are required for a forecast.")
-            return
-        df = df.sort_values("month")
-        X = df[["month"]]
-        y = df["sales"]
-
-        model = LinearRegression()
-        model.fit(X, y)
-
-        next_month = [[X.iloc[-1][0] + 1]]
-        predicted_sales = model.predict(next_month)[0]
-
+        history = load_sales_history(csv_file)
+        predicted_sales = predict_next_sales(history)
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}\n")
+        return predicted_sales
+    except (OSError, pd.errors.ParserError, ValueError) as exc:
+        print(f"❌ Error: {exc}")
+        return None
 
-    except Exception as e:
-        print(f"❌ Error: {e}")
 
 def main():
     if len(sys.argv) != 2:
         print("Usage: python forecast.py <csv_file>")
-        return
+        return 2
+    return 0 if forecast_sales(sys.argv[1]) is not None else 1
 
-    forecast_sales(sys.argv[1])
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
