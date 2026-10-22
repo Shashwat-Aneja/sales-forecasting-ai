@@ -36,6 +36,24 @@ def predict_next_sales(df):
     return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
 
 
+def summarize_forecast(history, predicted_sales):
+    """Return transparent context for a one-period sales forecast."""
+    latest_month = float(history["month"].max())
+    latest_sales = float(history.loc[history["month"].idxmax(), "sales"])
+    if predicted_sales > latest_sales:
+        trend = "increasing"
+    elif predicted_sales < latest_sales:
+        trend = "decreasing"
+    else:
+        trend = "stable"
+    return {
+        "next_month": latest_month + 1,
+        "historical_average": float(history["sales"].mean()),
+        "predicted_sales": float(predicted_sales),
+        "trend": trend,
+    }
+
+
 def forecast_sales(csv_file):
     try:
         history = load_sales_history(csv_file)
