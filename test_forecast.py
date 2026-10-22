@@ -35,5 +35,22 @@ class SalesForecastTests(unittest.TestCase):
         self.assertAlmostEqual(predict_next_sales(history), 40.0)
 
 
+    def test_forecast_summary_reports_average_period_and_trend(self):
+        from forecast import summarize_forecast
+
+        history = pd.DataFrame({"month": [1, 2, 3], "sales": [10, 20, 30]})
+        summary = summarize_forecast(history, 40.0)
+
+        self.assertEqual(summary["next_month"], 4.0)
+        self.assertEqual(summary["historical_average"], 20.0)
+        self.assertEqual(summary["predicted_sales"], 40.0)
+        self.assertEqual(summary["trend"], "increasing")
+
+    def test_forecast_summary_marks_flat_trend(self):
+        from forecast import summarize_forecast
+
+        history = pd.DataFrame({"month": [1, 2], "sales": [10, 10]})
+        self.assertEqual(summarize_forecast(history, 10)["trend"], "stable")
+
 if __name__ == "__main__":
     unittest.main()
