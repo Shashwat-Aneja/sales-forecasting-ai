@@ -46,6 +46,18 @@ class SalesForecastTests(unittest.TestCase):
         self.assertEqual(summary["predicted_sales"], 40.0)
         self.assertEqual(summary["trend"], "increasing")
 
+    def test_forecast_sales_prints_context_metrics(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from forecast import forecast_sales
+
+        path = self.write_csv("month,sales\n1,10\n2,20\n3,30\n")
+        output = StringIO()
+        with redirect_stdout(output):
+            forecast_sales(path)
+        self.assertIn("Historical average: ₹20.00", output.getvalue())
+        self.assertIn("Trend: increasing", output.getvalue())
+
     def test_forecast_summary_marks_flat_trend(self):
         from forecast import summarize_forecast
 
