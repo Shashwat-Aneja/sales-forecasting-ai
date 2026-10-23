@@ -61,7 +61,10 @@ def forecast_sales(csv_file):
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
-        print(f"Predicted sales for next period: ₹{predicted_sales:.2f}\n")
+        summary = summarize_forecast(history, predicted_sales)
+        print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
+        print(f"Historical average: ₹{summary['historical_average']:.2f}")
+        print(f"Trend: {summary['trend']}\n")
         return predicted_sales
     except (OSError, pd.errors.ParserError, ValueError) as exc:
         print(f"❌ Error: {exc}")
