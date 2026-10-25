@@ -58,6 +58,18 @@ class SalesForecastTests(unittest.TestCase):
         self.assertIn("Historical average: ₹20.00", output.getvalue())
         self.assertIn("Trend: increasing", output.getvalue())
 
+    def test_forecast_summary_reports_in_sample_fit_errors(self):
+        from forecast import summarize_forecast
+
+        history = pd.DataFrame({"month": [1, 2, 3], "sales": [10, 20, 40]})
+        summary = summarize_forecast(history, 50.0)
+
+        self.assertGreater(summary["historical_fit_mae"], 0)
+        self.assertGreater(summary["historical_fit_rmse"], 0)
+        self.assertGreaterEqual(
+            summary["historical_fit_rmse"], summary["historical_fit_mae"]
+        )
+
     def test_forecast_summary_marks_flat_trend(self):
         from forecast import summarize_forecast
 
