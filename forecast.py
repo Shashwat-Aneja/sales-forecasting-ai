@@ -1,6 +1,7 @@
 import math
 import sys
 
+import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
@@ -40,6 +41,14 @@ def summarize_forecast(history, predicted_sales):
     """Return transparent context for a one-period sales forecast."""
     latest_month = float(history["month"].max())
     latest_sales = float(history.loc[history["month"].idxmax(), "sales"])
+
+    # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
+    fit_model = LinearRegression()
+    fit_model.fit(history[["month"]], history["sales"])
+    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(history[["month"]])
+    fit_mae = float(np.mean(np.abs(residuals)))
+    fit_rmse = float(np.sqrt(np.mean(np.square(residuals))))
+
     if predicted_sales > latest_sales:
         trend = "increasing"
     elif predicted_sales < latest_sales:
@@ -51,6 +60,8 @@ def summarize_forecast(history, predicted_sales):
         "historical_average": float(history["sales"].mean()),
         "predicted_sales": float(predicted_sales),
         "trend": trend,
+        "historical_fit_mae": fit_mae,
+        "historical_fit_rmse": fit_rmse,
     }
 
 
@@ -64,7 +75,9 @@ def forecast_sales(csv_file):
         summary = summarize_forecast(history, predicted_sales)
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
-        print(f"Trend: {summary['trend']}\n")
+        print(f"Trend: {summary['trend']}")
+        print(f"Historical fit MAE (in-sample): ₹{summary['historical_fit_mae']:.2f}")
+        print(f"Historical fit RMSE (in-sample): ₹{summary['historical_fit_rmse']:.2f}\n")
         return predicted_sales
     except (OSError, pd.errors.ParserError, ValueError) as exc:
         print(f"❌ Error: {exc}")
