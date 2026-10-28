@@ -37,8 +37,38 @@ def predict_next_sales(df):
     return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
 
 
+def backtest_forecast(history):
+    """Evaluate one-period-ahead predictions using expanding historical windows.
+
+    At least three observations are required so that the first evaluation has
+    two training periods and one held-out period. The function never trains on
+    the observation it evaluates.
+    """
+    ordered = history.sort_values("month").reset_index(drop=True)
+    if len(ordered) < 3:
+        return None
+
+    errors = []
+    for split_index in range(2, len(ordered)):
+        training = ordered.iloc[:split_index]
+        held_out = ordered.iloc[split_index]
+        model = LinearRegression()
+        model.fit(training[["month"]], training["sales"])
+        prediction = float(
+            model.predict(pd.DataFrame({"month": [float(held_out["month"])]}))[0]
+        )
+        errors.append(float(held_out["sales"]) - prediction)
+
+    absolute_errors = np.abs(np.asarray(errors, dtype=float))
+    return {
+        "backtest_periods": len(errors),
+        "backtest_mae": float(np.mean(absolute_errors)),
+        "backtest_rmse": float(np.sqrt(np.mean(np.square(errors)))),
+    }
+
+
 def summarize_forecast(history, predicted_sales):
-    """Return transparent context for a one-period sales forecast."""
+    """Return transparent context and out-of-sample backtest metrics when possible."""
     latest_month = float(history["month"].max())
     latest_sales = float(history.loc[history["month"].idxmax(), "sales"])
 
@@ -55,7 +85,7 @@ def summarize_forecast(history, predicted_sales):
         trend = "decreasing"
     else:
         trend = "stable"
-    return {
+    summary = {
         "next_month": latest_month + 1,
         "historical_average": float(history["sales"].mean()),
         "predicted_sales": float(predicted_sales),
@@ -63,6 +93,10 @@ def summarize_forecast(history, predicted_sales):
         "historical_fit_mae": fit_mae,
         "historical_fit_rmse": fit_rmse,
     }
+    backtest = backtest_forecast(history)
+    if backtest is not None:
+        summary.update(backtest)
+    return summary
 
 
 def forecast_sales(csv_file):
@@ -77,7 +111,15 @@ def forecast_sales(csv_file):
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
         print(f"Trend: {summary['trend']}")
         print(f"Historical fit MAE (in-sample): ₹{summary['historical_fit_mae']:.2f}")
-        print(f"Historical fit RMSE (in-sample): ₹{summary['historical_fit_rmse']:.2f}\n")
+        print(f"Historical fit RMSE (in-sample): ₹{summary['historical_fit_rmse']:.2f}")
+        if "backtest_mae" in summary:
+            print(
+                f"Rolling backtest MAE ({summary['backtest_periods']} periods): "
+                f"₹{summary['backtest_mae']:.2f}"
+            )
+            print(f"Rolling backtest RMSE: ₹{summary['backtest_rmse']:.2f}\n")
+        else:
+            print("Rolling backtest: unavailable (requires at least 3 observed periods)\n")
         return predicted_sales
     except (OSError, pd.errors.ParserError, ValueError) as exc:
         print(f"❌ Error: {exc}")
