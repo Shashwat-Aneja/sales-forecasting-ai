@@ -11,7 +11,7 @@ def test_backtest_uses_held_out_periods_and_reports_error_metrics():
     result = backtest_forecast(history)
 
     assert result["backtest_periods"] == 2
-    assert result["backtest_mae"] == 5.0
+    assert abs(result["backtest_mae"] - 5.0) < 1e-9
     assert abs(result["backtest_rmse"] - (50 ** 0.5)) < 1e-9
 
 
@@ -29,4 +29,4 @@ def test_backtest_sorts_observations_before_splitting():
     result = backtest_forecast(history)
 
     assert result["backtest_periods"] == 2
-    assert result["backtest_mae"] == 5.0
+    assert abs(result["backtest_mae"] - 5.0) < 1e-9
