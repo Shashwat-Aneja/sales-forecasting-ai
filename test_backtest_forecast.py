@@ -31,3 +31,16 @@ def test_backtest_sorts_observations_before_splitting():
 
     assert result["backtest_periods"] == 2
     assert abs(result["backtest_mae"] - 5.0) < 1e-9
+
+
+@pytest.mark.parametrize(
+    ("history", "message"),
+    [
+        (pd.DataFrame({"month": [1, 2, 2], "sales": [10, 20, 30]}), "only once"),
+        (pd.DataFrame({"month": [1, 2, 3], "sales": [10, float("inf"), 30]}), "finite"),
+        (pd.DataFrame({"month": [1, 2, 3], "revenue": [10, 20, 30]}), "columns"),
+    ],
+)
+def test_backtest_rejects_invalid_history(history, message):
+    with pytest.raises(ValueError, match=message):
+        backtest_forecast(history)
