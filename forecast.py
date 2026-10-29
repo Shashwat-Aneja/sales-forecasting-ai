@@ -42,9 +42,26 @@ def backtest_forecast(history):
 
     At least three observations are required so that the first evaluation has
     two training periods and one held-out period. The function never trains on
-    the observation it evaluates.
+    the observation it evaluates. Validate inputs here as callers may invoke
+    backtesting directly without going through load_sales_history().
     """
-    ordered = history.sort_values("month").reset_index(drop=True)
+    missing = REQUIRED_COLUMNS.difference(history.columns)
+    if missing:
+        raise ValueError(
+            f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}"
+        )
+
+    ordered = history.loc[:, ["month", "sales"]].copy()
+    for column in ("month", "sales"):
+        ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+    if ordered.empty or ordered.isna().any().any():
+        raise ValueError("History must contain numeric month and sales values.")
+    if not np.isfinite(ordered.to_numpy(dtype=float)).all():
+        raise ValueError("Month and sales values must be finite numbers.")
+    if ordered["month"].duplicated().any():
+        raise ValueError("Each month must appear only once in the sales history.")
+
+    ordered = ordered.sort_values("month").reset_index(drop=True)
     if len(ordered) < 3:
         return None
 
