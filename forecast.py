@@ -1,5 +1,4 @@
 import math
-import sys
 
 import numpy as np
 import pandas as pd
@@ -35,6 +34,33 @@ def predict_next_sales(df):
     model.fit(df[["month"]], df["sales"])
     next_month = float(df["month"].iloc[-1]) + 1
     return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
+
+
+def predict_sales_horizon(history, periods=1):
+    """Predict one or more future monthly sales values from the fitted trend."""
+    if not isinstance(periods, int) or isinstance(periods, bool) or periods < 1:
+        raise ValueError("periods must be a positive integer.")
+    missing = REQUIRED_COLUMNS.difference(history.columns)
+    if missing:
+        raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
+    ordered = history.loc[:, ["month", "sales"]].copy()
+    for column in ("month", "sales"):
+        ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+    if ordered.empty or ordered.isna().any().any():
+        raise ValueError("History must contain numeric month and sales values.")
+    if not np.isfinite(ordered.to_numpy(dtype=float)).all():
+        raise ValueError("Month and sales values must be finite numbers.")
+    if ordered["month"].duplicated().any():
+        raise ValueError("Each month must appear only once in the sales history.")
+    if ordered["month"].nunique() < 2:
+        raise ValueError("At least two distinct months are required for a forecast.")
+    ordered = ordered.sort_values("month").reset_index(drop=True)
+    model = LinearRegression()
+    model.fit(ordered[["month"]], ordered["sales"])
+    first_future_month = float(ordered["month"].iloc[-1]) + 1
+    future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
+    predictions = model.predict(pd.DataFrame({"month": future_months}))
+    return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
 def backtest_forecast(history):
@@ -116,10 +142,11 @@ def summarize_forecast(history, predicted_sales):
     return summary
 
 
-def forecast_sales(csv_file):
+def forecast_sales(csv_file, horizon=1):
     try:
         history = load_sales_history(csv_file)
-        predicted_sales = predict_next_sales(history)
+        forecast = predict_sales_horizon(history, periods=horizon)
+        predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
@@ -137,6 +164,10 @@ def forecast_sales(csv_file):
             print(f"Rolling backtest RMSE: ₹{summary['backtest_rmse']:.2f}\n")
         else:
             print("Rolling backtest: unavailable (requires at least 3 observed periods)\n")
+        if horizon > 1:
+            print("Extended forecast:")
+            for row in forecast.itertuples(index=False):
+                print(f"Month {row.month:g}: ₹{row.predicted_sales:.2f}")
         return predicted_sales
     except (OSError, pd.errors.ParserError, ValueError) as exc:
         print(f"❌ Error: {exc}")
@@ -144,10 +175,13 @@ def forecast_sales(csv_file):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python forecast.py <csv_file>")
-        return 2
-    return 0 if forecast_sales(sys.argv[1]) is not None else 1
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Forecast monthly sales from a CSV history.")
+    parser.add_argument("csv_file", help="CSV containing month and sales columns")
+    parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
+    args = parser.parse_args()
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon) is not None else 1
 
 
 if __name__ == "__main__":
