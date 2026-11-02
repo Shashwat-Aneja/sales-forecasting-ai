@@ -7,6 +7,13 @@ from sklearn.linear_model import LinearRegression
 REQUIRED_COLUMNS = {"month", "sales"}
 
 
+def _validate_month_index(values):
+    """Require whole-number period indexes because forecasts advance by one month."""
+    months = np.asarray(values, dtype=float)
+    if not np.equal(months, np.floor(months)).all():
+        raise ValueError("Month values must be whole-number period indexes.")
+
+
 def load_sales_history(csv_file):
     """Load and validate monthly sales data, returning it in month order."""
     df = pd.read_csv(csv_file)
@@ -21,6 +28,7 @@ def load_sales_history(csv_file):
         raise ValueError("Sales history must contain numeric month and sales values.")
     if not all(math.isfinite(float(value)) for value in df.to_numpy().ravel()):
         raise ValueError("Month and sales values must be finite numbers.")
+    _validate_month_index(df["month"].to_numpy())
     if df["month"].nunique() < 2:
         raise ValueError("At least two distinct months are required for a forecast.")
     if df["month"].duplicated().any():
@@ -30,6 +38,7 @@ def load_sales_history(csv_file):
 
 def predict_next_sales(df):
     """Fit a linear trend and predict sales for the period after the latest month."""
+    _validate_month_index(df["month"].to_numpy())
     model = LinearRegression()
     model.fit(df[["month"]], df["sales"])
     next_month = float(df["month"].iloc[-1]) + 1
@@ -50,6 +59,7 @@ def predict_sales_horizon(history, periods=1):
         raise ValueError("History must contain numeric month and sales values.")
     if not np.isfinite(ordered.to_numpy(dtype=float)).all():
         raise ValueError("Month and sales values must be finite numbers.")
+    _validate_month_index(ordered["month"].to_numpy())
     if ordered["month"].duplicated().any():
         raise ValueError("Each month must appear only once in the sales history.")
     if ordered["month"].nunique() < 2:
@@ -84,6 +94,7 @@ def backtest_forecast(history):
         raise ValueError("History must contain numeric month and sales values.")
     if not np.isfinite(ordered.to_numpy(dtype=float)).all():
         raise ValueError("Month and sales values must be finite numbers.")
+    _validate_month_index(ordered["month"].to_numpy())
     if ordered["month"].duplicated().any():
         raise ValueError("Each month must appear only once in the sales history.")
 
