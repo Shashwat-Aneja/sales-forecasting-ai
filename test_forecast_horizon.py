@@ -2,7 +2,12 @@ import unittest
 
 import pandas as pd
 
-from forecast import predict_sales_horizon
+from forecast import (
+    backtest_forecast,
+    load_sales_history,
+    predict_next_sales,
+    predict_sales_horizon,
+)
 
 
 class ForecastHorizonTests(unittest.TestCase):
@@ -24,6 +29,34 @@ class ForecastHorizonTests(unittest.TestCase):
         history = pd.DataFrame({"month": [1, 2, 2], "sales": [10, 20, 30]})
         with self.assertRaisesRegex(ValueError, "only once"):
             predict_sales_horizon(history, periods=2)
+
+    def test_rejects_fractional_month_indexes_in_horizon_forecasts(self):
+        history = pd.DataFrame({"month": [1.0, 2.5, 3.0], "sales": [10, 25, 30]})
+        with self.assertRaisesRegex(ValueError, "whole-number period indexes"):
+            predict_sales_horizon(history, periods=2)
+
+    def test_rejects_fractional_month_indexes_in_backtesting(self):
+        history = pd.DataFrame({"month": [1.0, 2.5, 3.0], "sales": [10, 25, 30]})
+        with self.assertRaisesRegex(ValueError, "whole-number period indexes"):
+            backtest_forecast(history)
+
+    def test_rejects_fractional_month_indexes_in_single_period_forecast(self):
+        history = pd.DataFrame({"month": [1.5, 2.5], "sales": [15, 25]})
+        with self.assertRaisesRegex(ValueError, "whole-number period indexes"):
+            predict_next_sales(history)
+
+    def test_csv_loader_rejects_fractional_month_indexes(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "sales.csv"
+            pd.DataFrame(
+                {"month": [1, 2.5, 3], "sales": [10, 25, 30]}
+            ).to_csv(csv_path, index=False)
+
+            with self.assertRaisesRegex(ValueError, "whole-number period indexes"):
+                load_sales_history(csv_path)
 
 
 if __name__ == "__main__":
