@@ -76,5 +76,15 @@ class SalesForecastTests(unittest.TestCase):
         history = pd.DataFrame({"month": [1, 2], "sales": [10, 10]})
         self.assertEqual(summarize_forecast(history, 10)["trend"], "stable")
 
+    def test_single_period_forecast_uses_latest_month_from_unsorted_history(self):
+        history = pd.DataFrame({"month": [3, 1, 2], "sales": [30, 10, 20]})
+        self.assertAlmostEqual(predict_next_sales(history), 40.0)
+
+    def test_single_period_forecast_rejects_duplicate_months(self):
+        history = pd.DataFrame({"month": [1, 2, 2], "sales": [10, 20, 30]})
+        with self.assertRaisesRegex(ValueError, "only once"):
+            predict_next_sales(history)
+
+
 if __name__ == "__main__":
     unittest.main()
