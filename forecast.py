@@ -37,11 +37,28 @@ def load_sales_history(csv_file):
 
 
 def predict_next_sales(df):
-    """Fit a linear trend and predict sales for the period after the latest month."""
-    _validate_month_index(df["month"].to_numpy())
+    """Fit a linear trend and predict the period after the latest observed month."""
+    missing = REQUIRED_COLUMNS.difference(df.columns)
+    if missing:
+        raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
+
+    ordered = df.loc[:, ["month", "sales"]].copy()
+    for column in ("month", "sales"):
+        ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+    if ordered.empty or ordered.isna().any().any():
+        raise ValueError("History must contain numeric month and sales values.")
+    if not np.isfinite(ordered.to_numpy(dtype=float)).all():
+        raise ValueError("Month and sales values must be finite numbers.")
+    _validate_month_index(ordered["month"].to_numpy())
+    if ordered["month"].duplicated().any():
+        raise ValueError("Each month must appear only once in the sales history.")
+    if ordered["month"].nunique() < 2:
+        raise ValueError("At least two distinct months are required for a forecast.")
+
+    ordered = ordered.sort_values("month").reset_index(drop=True)
     model = LinearRegression()
-    model.fit(df[["month"]], df["sales"])
-    next_month = float(df["month"].iloc[-1]) + 1
+    model.fit(ordered[["month"]], ordered["sales"])
+    next_month = float(ordered["month"].iloc[-1]) + 1
     return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
 
 
