@@ -14,6 +14,16 @@ def _validate_month_index(values):
         raise ValueError("Month values must be whole-number period indexes.")
 
 
+def _predict_finite(model, features):
+    """Reject invalid model outputs instead of reporting NaN or infinity as a forecast."""
+    predictions = np.asarray(model.predict(features), dtype=float)
+    if not np.isfinite(predictions).all():
+        raise ValueError(
+            "Forecast produced non-finite predictions; check the magnitude of the sales history."
+        )
+    return predictions
+
+
 def load_sales_history(csv_file):
     """Load and validate monthly sales data, returning it in month order."""
     df = pd.read_csv(csv_file)
@@ -59,7 +69,7 @@ def predict_next_sales(df):
     model = LinearRegression()
     model.fit(ordered[["month"]], ordered["sales"])
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
+    return float(_predict_finite(model, pd.DataFrame({"month": [next_month]}))[0])
 
 
 def predict_sales_horizon(history, periods=1):
@@ -86,7 +96,7 @@ def predict_sales_horizon(history, periods=1):
     model.fit(ordered[["month"]], ordered["sales"])
     first_future_month = float(ordered["month"].iloc[-1]) + 1
     future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
-    predictions = model.predict(pd.DataFrame({"month": future_months}))
+    predictions = _predict_finite(model, pd.DataFrame({"month": future_months}))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
@@ -126,7 +136,7 @@ def backtest_forecast(history):
         model = LinearRegression()
         model.fit(training[["month"]], training["sales"])
         prediction = float(
-            model.predict(pd.DataFrame({"month": [float(held_out["month"])]}))[0]
+            _predict_finite(model, pd.DataFrame({"month": [float(held_out["month"])]}))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
 
@@ -146,7 +156,7 @@ def summarize_forecast(history, predicted_sales):
     # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
     fit_model = LinearRegression()
     fit_model.fit(history[["month"]], history["sales"])
-    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(history[["month"]])
+    residuals = history["sales"].to_numpy(dtype=float) - _predict_finite(fit_model, history[["month"]])
     fit_mae = float(np.mean(np.abs(residuals)))
     fit_rmse = float(np.sqrt(np.mean(np.square(residuals))))
 
