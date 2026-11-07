@@ -91,10 +91,6 @@ class SalesForecastTests(unittest.TestCase):
             predict_next_sales(history)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
     def test_forecast_entry_points_reject_non_finite_model_outputs(self):
         from unittest.mock import patch
 
@@ -110,3 +106,8 @@ if __name__ == "__main__":
                 with patch("forecast.LinearRegression.predict", return_value=[float("inf")]):
                     with self.assertRaisesRegex(ValueError, "non-finite predictions"):
                         operation()
+
+
+if __name__ == "__main__":
+    unittest.main()
+
