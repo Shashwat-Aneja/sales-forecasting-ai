@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from forecast import load_sales_history, predict_next_sales
+from forecast import (
+    backtest_forecast,
+    load_sales_history,
+    predict_next_sales,
+    predict_sales_horizon,
+)
 
 
 class SalesForecastTests(unittest.TestCase):
@@ -88,3 +93,20 @@ class SalesForecastTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_forecast_entry_points_reject_non_finite_model_outputs(self):
+        from unittest.mock import patch
+
+        history = pd.DataFrame({"month": [1, 2, 3], "sales": [10, 20, 30]})
+        operations = [
+            ("single period", lambda: predict_next_sales(history)),
+            ("forecast horizon", lambda: predict_sales_horizon(history, periods=2)),
+            ("rolling backtest", lambda: backtest_forecast(history)),
+        ]
+
+        for name, operation in operations:
+            with self.subTest(name=name):
+                with patch("forecast.LinearRegression.predict", return_value=[float("inf")]):
+                    with self.assertRaisesRegex(ValueError, "non-finite predictions"):
+                        operation()
