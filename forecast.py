@@ -5,11 +5,14 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 REQUIRED_COLUMNS = {"month", "sales"}
+MAX_SAFE_MONTH_INDEX = 2**53 - 1
 
 
 def _validate_month_index(values):
     """Require whole-number period indexes because forecasts advance by one month."""
     months = np.asarray(values, dtype=float)
+    if np.any(np.abs(months) > MAX_SAFE_MONTH_INDEX):
+        raise ValueError("Month indexes exceed exact floating-point integer precision.")
     if not np.equal(months, np.floor(months)).all():
         raise ValueError("Month values must be whole-number period indexes.")
 
@@ -58,6 +61,8 @@ def predict_next_sales(df):
     ordered = ordered.sort_values("month").reset_index(drop=True)
     model = LinearRegression()
     model.fit(ordered[["month"]], ordered["sales"])
+    if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
+        raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
     return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
 
@@ -84,6 +89,8 @@ def predict_sales_horizon(history, periods=1):
     ordered = ordered.sort_values("month").reset_index(drop=True)
     model = LinearRegression()
     model.fit(ordered[["month"]], ordered["sales"])
+    if float(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
+        raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
     first_future_month = float(ordered["month"].iloc[-1]) + 1
     future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
     predictions = model.predict(pd.DataFrame({"month": future_months}))
