@@ -79,3 +79,5 @@ Predicted sales for next period: ₹7320.45
 ---
 
 Built by **Shashwat Aneja**
+
+Forecast horizons are limited to 1,200 monthly periods (100 years) to bound allocation and output size. Larger horizons return a validation error.

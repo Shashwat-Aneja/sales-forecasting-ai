@@ -6,6 +6,7 @@ from sklearn.linear_model import LinearRegression
 
 REQUIRED_COLUMNS = {"month", "sales"}
 MAX_SAFE_MONTH_INDEX = 2**53 - 1
+MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
 def _validate_month_index(values):
@@ -72,6 +73,8 @@ def predict_sales_horizon(history, periods=1):
     """Predict one or more future monthly sales values from the fitted trend."""
     if not isinstance(periods, int) or isinstance(periods, bool) or periods < 1:
         raise ValueError("periods must be a positive integer.")
+    if periods > MAX_FORECAST_PERIODS:
+        raise ValueError(f"Forecast horizon cannot exceed {MAX_FORECAST_PERIODS} months.")
     missing = REQUIRED_COLUMNS.difference(history.columns)
     if missing:
         raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
