@@ -9,6 +9,14 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
+def _finite_predictions(values):
+    """Do not publish invalid extrapolations even when all inputs are finite."""
+    predictions = np.asarray(values, dtype=float)
+    if not np.isfinite(predictions).all():
+        raise ValueError("Forecast results exceed the supported numeric range.")
+    return predictions
+
+
 def _validate_month_index(values):
     """Require whole-number period indexes because forecasts advance by one month."""
     months = np.asarray(values, dtype=float)
@@ -66,7 +74,7 @@ def predict_next_sales(df):
     if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(model.predict(pd.DataFrame({"month": [next_month - origin]}))[0])
+    return float(_finite_predictions(model.predict(pd.DataFrame({"month": [next_month - origin]})))[0])
 
 
 def predict_sales_horizon(history, periods=1):
@@ -98,7 +106,7 @@ def predict_sales_horizon(history, periods=1):
         raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
     first_future_month = float(ordered["month"].iloc[-1]) + 1
     future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
-    predictions = model.predict(pd.DataFrame({"month": future_months - origin}))
+    predictions = _finite_predictions(model.predict(pd.DataFrame({"month": future_months - origin})))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
@@ -139,7 +147,7 @@ def backtest_forecast(history):
         origin = float(training["month"].iloc[0])
         model.fit(training[["month"]] - origin, training["sales"])
         prediction = float(
-            model.predict(pd.DataFrame({"month": [float(held_out["month"]) - origin]}))[0]
+            _finite_predictions(model.predict(pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
 
