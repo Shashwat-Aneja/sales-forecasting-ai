@@ -17,6 +17,17 @@ def _finite_predictions(values):
     return predictions
 
 
+def _stable_rmse(errors):
+    """Compute finite RMSE without overflowing when finite residuals are squared."""
+    values = np.asarray(errors, dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError("Forecast residuals exceed the supported numeric range.")
+    scale = float(np.max(np.abs(values))) if values.size else 0.0
+    if scale == 0:
+        return 0.0
+    return scale * float(np.sqrt(np.mean(np.square(values / scale))))
+
+
 def _validate_month_index(values):
     """Require whole-number period indexes because forecasts advance by one month."""
     months = np.asarray(values, dtype=float)
@@ -155,7 +166,7 @@ def backtest_forecast(history):
     return {
         "backtest_periods": len(errors),
         "backtest_mae": float(np.mean(absolute_errors)),
-        "backtest_rmse": float(np.sqrt(np.mean(np.square(errors)))),
+        "backtest_rmse": _stable_rmse(errors),
     }
 
 
@@ -170,7 +181,7 @@ def summarize_forecast(history, predicted_sales):
     fit_model.fit(centered_months, history["sales"])
     residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(centered_months)
     fit_mae = float(np.mean(np.abs(residuals)))
-    fit_rmse = float(np.sqrt(np.mean(np.square(residuals))))
+    fit_rmse = _stable_rmse(residuals)
 
     if predicted_sales > latest_sales:
         trend = "increasing"
