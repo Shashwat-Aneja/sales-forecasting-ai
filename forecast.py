@@ -6,6 +6,26 @@ from sklearn.linear_model import LinearRegression
 
 REQUIRED_COLUMNS = {"month", "sales"}
 MAX_SAFE_MONTH_INDEX = 2**53 - 1
+MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
+
+
+def _finite_predictions(values):
+    """Do not publish invalid extrapolations even when all inputs are finite."""
+    predictions = np.asarray(values, dtype=float)
+    if not np.isfinite(predictions).all():
+        raise ValueError("Forecast results exceed the supported numeric range.")
+    return predictions
+
+
+def _stable_rmse(errors):
+    """Compute finite RMSE without overflowing when finite residuals are squared."""
+    values = np.asarray(errors, dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError("Forecast residuals exceed the supported numeric range.")
+    scale = float(np.max(np.abs(values))) if values.size else 0.0
+    if scale == 0:
+        return 0.0
+    return scale * float(np.sqrt(np.mean(np.square(values / scale))))
 
 
 def _validate_month_index(values):
@@ -60,17 +80,20 @@ def predict_next_sales(df):
 
     ordered = ordered.sort_values("month").reset_index(drop=True)
     model = LinearRegression()
-    model.fit(ordered[["month"]], ordered["sales"])
+    origin = float(ordered["month"].iloc[0])
+    model.fit(ordered[["month"]] - origin, ordered["sales"])
     if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(model.predict(pd.DataFrame({"month": [next_month]}))[0])
+    return float(_finite_predictions(model.predict(pd.DataFrame({"month": [next_month - origin]})))[0])
 
 
 def predict_sales_horizon(history, periods=1):
     """Predict one or more future monthly sales values from the fitted trend."""
     if not isinstance(periods, int) or isinstance(periods, bool) or periods < 1:
         raise ValueError("periods must be a positive integer.")
+    if periods > MAX_FORECAST_PERIODS:
+        raise ValueError(f"Forecast horizon cannot exceed {MAX_FORECAST_PERIODS} months.")
     missing = REQUIRED_COLUMNS.difference(history.columns)
     if missing:
         raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
@@ -88,12 +111,13 @@ def predict_sales_horizon(history, periods=1):
         raise ValueError("At least two distinct months are required for a forecast.")
     ordered = ordered.sort_values("month").reset_index(drop=True)
     model = LinearRegression()
-    model.fit(ordered[["month"]], ordered["sales"])
+    origin = float(ordered["month"].iloc[0])
+    model.fit(ordered[["month"]] - origin, ordered["sales"])
     if float(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
         raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
     first_future_month = float(ordered["month"].iloc[-1]) + 1
     future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
-    predictions = model.predict(pd.DataFrame({"month": future_months}))
+    predictions = _finite_predictions(model.predict(pd.DataFrame({"month": future_months - origin})))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
@@ -131,9 +155,10 @@ def backtest_forecast(history):
         training = ordered.iloc[:split_index]
         held_out = ordered.iloc[split_index]
         model = LinearRegression()
-        model.fit(training[["month"]], training["sales"])
+        origin = float(training["month"].iloc[0])
+        model.fit(training[["month"]] - origin, training["sales"])
         prediction = float(
-            model.predict(pd.DataFrame({"month": [float(held_out["month"])]}))[0]
+            _finite_predictions(model.predict(pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
 
@@ -141,7 +166,7 @@ def backtest_forecast(history):
     return {
         "backtest_periods": len(errors),
         "backtest_mae": float(np.mean(absolute_errors)),
-        "backtest_rmse": float(np.sqrt(np.mean(np.square(errors)))),
+        "backtest_rmse": _stable_rmse(errors),
     }
 
 
@@ -152,10 +177,11 @@ def summarize_forecast(history, predicted_sales):
 
     # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
     fit_model = LinearRegression()
-    fit_model.fit(history[["month"]], history["sales"])
-    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(history[["month"]])
+    centered_months = history[["month"]] - float(history["month"].min())
+    fit_model.fit(centered_months, history["sales"])
+    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(centered_months)
     fit_mae = float(np.mean(np.abs(residuals)))
-    fit_rmse = float(np.sqrt(np.mean(np.square(residuals))))
+    fit_rmse = _stable_rmse(residuals)
 
     if predicted_sales > latest_sales:
         trend = "increasing"
