@@ -37,35 +37,15 @@ def _validate_month_index(values):
         raise ValueError("Month values must be whole-number period indexes.")
 
 
-def load_sales_history(csv_file):
-    """Load and validate monthly sales data, returning it in month order."""
-    df = pd.read_csv(csv_file)
-    missing = REQUIRED_COLUMNS.difference(df.columns)
-    if missing:
-        raise ValueError(f"CSV must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
-
-    df = df.loc[:, ["month", "sales"]].copy()
-    for column in ("month", "sales"):
-        df[column] = pd.to_numeric(df[column], errors="coerce")
-    if df.empty or df.isna().any().any():
-        raise ValueError("Sales history must contain numeric month and sales values.")
-    if not all(math.isfinite(float(value)) for value in df.to_numpy().ravel()):
-        raise ValueError("Month and sales values must be finite numbers.")
-    _validate_month_index(df["month"].to_numpy())
-    if df["month"].nunique() < 2:
-        raise ValueError("At least two distinct months are required for a forecast.")
-    if df["month"].duplicated().any():
-        raise ValueError("Each month must appear only once in the sales history.")
-    return df.sort_values("month").reset_index(drop=True)
-
-
-def predict_next_sales(df):
-    """Fit a linear trend and predict the period after the latest observed month."""
-    missing = REQUIRED_COLUMNS.difference(df.columns)
-    if missing:
-        raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
-
-    ordered = df.loc[:, ["month", "sales"]].copy()
+def validate_history(history, minimum_rows=2):
+    """Normalize every public entry point, including duplicated DataFrame indexes."""
+    if not isinstance(history, pd.DataFrame) or history.columns.duplicated().any():
+        raise ValueError("History must be a DataFrame with unique column names.")
+    if not REQUIRED_COLUMNS.issubset(history.columns):
+        raise ValueError("History must contain columns: month, sales")
+    ordered = history.loc[:, ["month", "sales"]].copy()
+    if ordered.apply(lambda column: column.map(lambda value: isinstance(value, (bool, np.bool_)))).any().any():
+        raise ValueError("History must contain numeric values, not booleans.")
     for column in ("month", "sales"):
         ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
     if ordered.empty or ordered.isna().any().any():
@@ -75,10 +55,19 @@ def predict_next_sales(df):
     _validate_month_index(ordered["month"].to_numpy())
     if ordered["month"].duplicated().any():
         raise ValueError("Each month must appear only once in the sales history.")
-    if ordered["month"].nunique() < 2:
+    if len(ordered) < minimum_rows:
         raise ValueError("At least two distinct months are required for a forecast.")
+    return ordered.sort_values("month").reset_index(drop=True)
 
-    ordered = ordered.sort_values("month").reset_index(drop=True)
+
+def load_sales_history(csv_file):
+    """Load and validate monthly sales data, returning it in month order."""
+    return validate_history(pd.read_csv(csv_file))
+
+
+def predict_next_sales(df):
+    """Fit a linear trend and predict the period after the latest observed month."""
+    ordered = validate_history(df)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
     model.fit(ordered[["month"]] - origin, ordered["sales"])
@@ -94,22 +83,7 @@ def predict_sales_horizon(history, periods=1):
         raise ValueError("periods must be a positive integer.")
     if periods > MAX_FORECAST_PERIODS:
         raise ValueError(f"Forecast horizon cannot exceed {MAX_FORECAST_PERIODS} months.")
-    missing = REQUIRED_COLUMNS.difference(history.columns)
-    if missing:
-        raise ValueError(f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}")
-    ordered = history.loc[:, ["month", "sales"]].copy()
-    for column in ("month", "sales"):
-        ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
-    if ordered.empty or ordered.isna().any().any():
-        raise ValueError("History must contain numeric month and sales values.")
-    if not np.isfinite(ordered.to_numpy(dtype=float)).all():
-        raise ValueError("Month and sales values must be finite numbers.")
-    _validate_month_index(ordered["month"].to_numpy())
-    if ordered["month"].duplicated().any():
-        raise ValueError("Each month must appear only once in the sales history.")
-    if ordered["month"].nunique() < 2:
-        raise ValueError("At least two distinct months are required for a forecast.")
-    ordered = ordered.sort_values("month").reset_index(drop=True)
+    ordered = validate_history(history)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
     model.fit(ordered[["month"]] - origin, ordered["sales"])
@@ -129,24 +103,7 @@ def backtest_forecast(history):
     the observation it evaluates. Validate inputs here as callers may invoke
     backtesting directly without going through load_sales_history().
     """
-    missing = REQUIRED_COLUMNS.difference(history.columns)
-    if missing:
-        raise ValueError(
-            f"History must contain columns: {', '.join(sorted(REQUIRED_COLUMNS))}"
-        )
-
-    ordered = history.loc[:, ["month", "sales"]].copy()
-    for column in ("month", "sales"):
-        ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
-    if ordered.empty or ordered.isna().any().any():
-        raise ValueError("History must contain numeric month and sales values.")
-    if not np.isfinite(ordered.to_numpy(dtype=float)).all():
-        raise ValueError("Month and sales values must be finite numbers.")
-    _validate_month_index(ordered["month"].to_numpy())
-    if ordered["month"].duplicated().any():
-        raise ValueError("Each month must appear only once in the sales history.")
-
-    ordered = ordered.sort_values("month").reset_index(drop=True)
+    ordered = validate_history(history, minimum_rows=1)
     if len(ordered) < 3:
         return None
 
@@ -172,6 +129,8 @@ def backtest_forecast(history):
 
 def summarize_forecast(history, predicted_sales):
     """Return transparent context and out-of-sample backtest metrics when possible."""
+    history = validate_history(history)
+    predicted_sales = float(_finite_predictions([predicted_sales])[0])
     latest_month = float(history["month"].max())
     latest_sales = float(history.loc[history["month"].idxmax(), "sales"])
 
