@@ -17,6 +17,16 @@ def _finite_predictions(values):
     return predictions
 
 
+def _stable_mean(values):
+    values = np.asarray(values, dtype=float)
+    if not values.size or not np.isfinite(values).all():
+        raise ValueError("Forecast metrics require non-empty finite values.")
+    scale = float(np.max(np.abs(values)))
+    if scale == 0:
+        return 0.0
+    return scale * (math.fsum(float(value) for value in values / scale) / len(values))
+
+
 def _stable_rmse(errors):
     """Compute finite RMSE without overflowing when finite residuals are squared."""
     values = np.asarray(errors, dtype=float)
@@ -122,7 +132,7 @@ def backtest_forecast(history):
     absolute_errors = np.abs(np.asarray(errors, dtype=float))
     return {
         "backtest_periods": len(errors),
-        "backtest_mae": float(np.mean(absolute_errors)),
+        "backtest_mae": _stable_mean(absolute_errors),
         "backtest_rmse": _stable_rmse(errors),
     }
 
@@ -139,7 +149,7 @@ def summarize_forecast(history, predicted_sales):
     centered_months = history[["month"]] - float(history["month"].min())
     fit_model.fit(centered_months, history["sales"])
     residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(centered_months)
-    fit_mae = float(np.mean(np.abs(residuals)))
+    fit_mae = _stable_mean(np.abs(residuals))
     fit_rmse = _stable_rmse(residuals)
 
     if predicted_sales > latest_sales:
@@ -150,7 +160,7 @@ def summarize_forecast(history, predicted_sales):
         trend = "stable"
     summary = {
         "next_month": latest_month + 1,
-        "historical_average": float(history["sales"].mean()),
+        "historical_average": _stable_mean(history["sales"].to_numpy(dtype=float)),
         "predicted_sales": float(predicted_sales),
         "trend": trend,
         "historical_fit_mae": fit_mae,
