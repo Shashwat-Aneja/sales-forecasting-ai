@@ -208,13 +208,24 @@ def forecast_sales(csv_file, horizon=1):
         return None
 
 
-def main():
+def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(description="Forecast monthly sales from a CSV history.")
     parser.add_argument("csv_file", help="CSV containing month and sales columns")
     parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
-    args = parser.parse_args()
+    parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
+    args = parser.parse_args(argv)
+    if args.json:
+        import json
+        try:
+            history = load_sales_history(args.csv_file)
+            result = predict_sales_horizon(history, args.horizon)
+            payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
+            print(json.dumps(payload, allow_nan=False))
+            return 0
+        except (OSError, pd.errors.ParserError, ValueError) as exc:
+            parser.exit(1, f"Error: {exc}\n")
     return 0 if forecast_sales(args.csv_file, horizon=args.horizon) is not None else 1
 
 
