@@ -99,10 +99,10 @@ def predict_sales_horizon(history, periods=1):
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
     model.fit(ordered[["month"]] - origin, ordered["sales"])
-    if float(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
+    if int(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
         raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
-    first_future_month = float(ordered["month"].iloc[-1]) + 1
-    future_months = np.arange(first_future_month, first_future_month + periods, dtype=float)
+    first_future_month = int(ordered["month"].iloc[-1]) + 1
+    future_months = np.array([first_future_month + offset for offset in range(periods)], dtype=float)
     predictions = _finite_predictions(model.predict(pd.DataFrame({"month": future_months - origin})))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
@@ -143,7 +143,9 @@ def summarize_forecast(history, predicted_sales):
     """Return transparent context and out-of-sample backtest metrics when possible."""
     history = validate_history(history)
     predicted_sales = float(_finite_predictions([predicted_sales])[0])
-    latest_month = float(history["month"].max())
+    latest_month = int(history["month"].max())
+    if latest_month >= MAX_SAFE_MONTH_INDEX:
+        raise ValueError("Next month exceeds exact floating-point integer precision.")
     latest_sales = float(history.loc[history["month"].idxmax(), "sales"])
 
     # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
