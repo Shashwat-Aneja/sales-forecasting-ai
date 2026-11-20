@@ -1,4 +1,5 @@
 import csv
+import tempfile
 import os
 from pathlib import Path
 import math
@@ -232,6 +233,25 @@ def forecast_sales(csv_file, horizon=1):
         return None
 
 
+def export_forecast_csv(frame, output_path, source_path):
+    output_path = Path(output_path).expanduser().resolve()
+    source_path = Path(source_path).expanduser().resolve()
+    if output_path == source_path or (output_path.exists() and output_path.samefile(source_path)):
+        raise ValueError("Forecast export must differ from the source history")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=output_path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            frame.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv=None):
     import argparse
 
@@ -239,14 +259,20 @@ def main(argv=None):
     parser.add_argument("csv_file", help="CSV containing month and sales columns")
     parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
+    parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
     args = parser.parse_args(argv)
-    if args.json:
+    if args.json or args.output:
         import json
         try:
             history = load_sales_history(args.csv_file)
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
-            print(json.dumps(payload, allow_nan=False))
+            if args.output:
+                export_forecast_csv(result, args.output, args.csv_file)
+            if args.json:
+                print(json.dumps(payload, allow_nan=False))
+            else:
+                print(result.to_string(index=False))
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
