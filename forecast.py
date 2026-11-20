@@ -91,16 +91,26 @@ def load_sales_history(csv_file):
     return validate_history(frame)
 
 
+def _fit_scaled_trend(model, months, sales):
+    scale = float(np.max(np.abs(sales))) or 1.0
+    model.fit(months, sales / scale)
+    model._forecast_target_scale = scale
+
+
+def _predict_scaled_trend(model, months):
+    return _finite_predictions(model.predict(months) * model._forecast_target_scale)
+
+
 def predict_next_sales(df):
     """Fit a linear trend and predict the period after the latest observed month."""
     ordered = validate_history(df)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
-    model.fit(ordered[["month"]] - origin, ordered["sales"])
+    _fit_scaled_trend(model, ordered[["month"]] - origin, ordered["sales"])
     if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(_finite_predictions(model.predict(pd.DataFrame({"month": [next_month - origin]})))[0])
+    return float(_finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [next_month - origin]})))[0])
 
 
 def predict_sales_horizon(history, periods=1):
@@ -112,12 +122,12 @@ def predict_sales_horizon(history, periods=1):
     ordered = validate_history(history)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
-    model.fit(ordered[["month"]] - origin, ordered["sales"])
+    _fit_scaled_trend(model, ordered[["month"]] - origin, ordered["sales"])
     if int(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
         raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
     first_future_month = int(ordered["month"].iloc[-1]) + 1
     future_months = np.array([first_future_month + offset for offset in range(periods)], dtype=float)
-    predictions = _finite_predictions(model.predict(pd.DataFrame({"month": future_months - origin})))
+    predictions = _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": future_months - origin})))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
@@ -139,9 +149,9 @@ def backtest_forecast(history):
         held_out = ordered.iloc[split_index]
         model = LinearRegression()
         origin = float(training["month"].iloc[0])
-        model.fit(training[["month"]] - origin, training["sales"])
+        _fit_scaled_trend(model, training[["month"]] - origin, training["sales"])
         prediction = float(
-            _finite_predictions(model.predict(pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
+            _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
 
@@ -165,8 +175,8 @@ def summarize_forecast(history, predicted_sales):
     # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
     fit_model = LinearRegression()
     centered_months = history[["month"]] - float(history["month"].min())
-    fit_model.fit(centered_months, history["sales"])
-    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(centered_months)
+    _fit_scaled_trend(fit_model, centered_months, history["sales"])
+    residuals = history["sales"].to_numpy(dtype=float) - _predict_scaled_trend(fit_model, centered_months)
     fit_mae = _stable_mean(np.abs(residuals))
     fit_rmse = _stable_rmse(residuals)
 
