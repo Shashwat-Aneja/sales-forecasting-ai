@@ -1,3 +1,7 @@
+import csv
+import tempfile
+import os
+from pathlib import Path
 import math
 
 import numpy as np
@@ -7,6 +11,15 @@ from sklearn.linear_model import LinearRegression
 REQUIRED_COLUMNS = {"month", "sales"}
 MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
+
+
+def _reject_duplicate_headers(csv_file):
+    """Do not let pandas silently rename ambiguous source CSV columns."""
+    if isinstance(csv_file, (str, os.PathLike)) and Path(csv_file).is_file():
+        with open(csv_file, encoding="utf-8-sig", newline="") as source:
+            headers = next(csv.reader(source), [])
+        if len(headers) != len(set(headers)):
+            raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
 
 
 def _finite_predictions(values):
@@ -74,7 +87,19 @@ def validate_history(history, minimum_rows=2):
 
 def load_sales_history(csv_file):
     """Load and validate monthly sales data, returning it in month order."""
-    return validate_history(pd.read_csv(csv_file))
+    frame = pd.read_csv(csv_file)
+    _reject_duplicate_headers(csv_file)
+    return validate_history(frame)
+
+
+def _fit_scaled_trend(model, months, sales):
+    scale = float(np.max(np.abs(sales))) or 1.0
+    model.fit(months, sales / scale)
+    model._forecast_target_scale = scale
+
+
+def _predict_scaled_trend(model, months):
+    return _finite_predictions(model.predict(months) * model._forecast_target_scale)
 
 
 def predict_next_sales(df):
@@ -82,11 +107,11 @@ def predict_next_sales(df):
     ordered = validate_history(df)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
-    model.fit(ordered[["month"]] - origin, ordered["sales"])
+    _fit_scaled_trend(model, ordered[["month"]] - origin, ordered["sales"])
     if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(_finite_predictions(model.predict(pd.DataFrame({"month": [next_month - origin]})))[0])
+    return float(_finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [next_month - origin]})))[0])
 
 
 def predict_sales_horizon(history, periods=1):
@@ -98,12 +123,12 @@ def predict_sales_horizon(history, periods=1):
     ordered = validate_history(history)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
-    model.fit(ordered[["month"]] - origin, ordered["sales"])
+    _fit_scaled_trend(model, ordered[["month"]] - origin, ordered["sales"])
     if int(ordered["month"].iloc[-1]) + periods > MAX_SAFE_MONTH_INDEX:
         raise ValueError("Forecast horizon exceeds exact floating-point integer precision.")
     first_future_month = int(ordered["month"].iloc[-1]) + 1
     future_months = np.array([first_future_month + offset for offset in range(periods)], dtype=float)
-    predictions = _finite_predictions(model.predict(pd.DataFrame({"month": future_months - origin})))
+    predictions = _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": future_months - origin})))
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
@@ -125,9 +150,9 @@ def backtest_forecast(history):
         held_out = ordered.iloc[split_index]
         model = LinearRegression()
         origin = float(training["month"].iloc[0])
-        model.fit(training[["month"]] - origin, training["sales"])
+        _fit_scaled_trend(model, training[["month"]] - origin, training["sales"])
         prediction = float(
-            _finite_predictions(model.predict(pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
+            _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
 
@@ -151,8 +176,8 @@ def summarize_forecast(history, predicted_sales):
     # These are in-sample fit diagnostics, not a guarantee of future forecast accuracy.
     fit_model = LinearRegression()
     centered_months = history[["month"]] - float(history["month"].min())
-    fit_model.fit(centered_months, history["sales"])
-    residuals = history["sales"].to_numpy(dtype=float) - fit_model.predict(centered_months)
+    _fit_scaled_trend(fit_model, centered_months, history["sales"])
+    residuals = history["sales"].to_numpy(dtype=float) - _predict_scaled_trend(fit_model, centered_months)
     fit_mae = _stable_mean(np.abs(residuals))
     fit_rmse = _stable_rmse(residuals)
 
@@ -208,6 +233,25 @@ def forecast_sales(csv_file, horizon=1):
         return None
 
 
+def export_forecast_csv(frame, output_path, source_path):
+    output_path = Path(output_path).expanduser().resolve()
+    source_path = Path(source_path).expanduser().resolve()
+    if output_path == source_path or (output_path.exists() and output_path.samefile(source_path)):
+        raise ValueError("Forecast export must differ from the source history")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=output_path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            frame.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv=None):
     import argparse
 
@@ -215,14 +259,20 @@ def main(argv=None):
     parser.add_argument("csv_file", help="CSV containing month and sales columns")
     parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
+    parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
     args = parser.parse_args(argv)
-    if args.json:
+    if args.json or args.output:
         import json
         try:
             history = load_sales_history(args.csv_file)
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
-            print(json.dumps(payload, allow_nan=False))
+            if args.output:
+                export_forecast_csv(result, args.output, args.csv_file)
+            if args.json:
+                print(json.dumps(payload, allow_nan=False))
+            else:
+                print(result.to_string(index=False))
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")

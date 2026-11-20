@@ -87,3 +87,5 @@ All forecast entry points share the same history validation. Repeated DataFrame 
 Historical averages and MAE metrics use scaled summation so finite observations do not produce infinite reports merely because their intermediate sum overflows.
 
 Use `--json` for a machine-readable forecast array and diagnostic summary, including rolling backtest metrics when available.
+
+Use `--output forecast.csv` to atomically export all requested forecast periods. It can be combined with `--json`; source-file aliases are rejected and a failed write preserves the previous export.
