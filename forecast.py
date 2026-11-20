@@ -1,3 +1,6 @@
+import csv
+import os
+from pathlib import Path
 import math
 
 import numpy as np
@@ -7,6 +10,15 @@ from sklearn.linear_model import LinearRegression
 REQUIRED_COLUMNS = {"month", "sales"}
 MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
+
+
+def _reject_duplicate_headers(csv_file):
+    """Do not let pandas silently rename ambiguous source CSV columns."""
+    if isinstance(csv_file, (str, os.PathLike)) and Path(csv_file).is_file():
+        with open(csv_file, encoding="utf-8-sig", newline="") as source:
+            headers = next(csv.reader(source), [])
+        if len(headers) != len(set(headers)):
+            raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
 
 
 def _finite_predictions(values):
@@ -74,7 +86,9 @@ def validate_history(history, minimum_rows=2):
 
 def load_sales_history(csv_file):
     """Load and validate monthly sales data, returning it in month order."""
-    return validate_history(pd.read_csv(csv_file))
+    frame = pd.read_csv(csv_file)
+    _reject_duplicate_headers(csv_file)
+    return validate_history(frame)
 
 
 def predict_next_sales(df):
