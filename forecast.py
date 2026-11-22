@@ -13,11 +13,19 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _reject_duplicate_headers(csv_file):
+def _read_csv_input(csv_file, delimiter=",", **options):
+    if delimiter not in (",", ";", "\t", "|"):
+        raise ValueError("Unsupported input delimiter.")
+    frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
+    _reject_duplicate_headers(csv_file, delimiter)
+    return frame
+
+
+def _reject_duplicate_headers(csv_file, delimiter=","):
     """Do not let pandas silently rename ambiguous source CSV columns."""
     if isinstance(csv_file, (str, os.PathLike)) and Path(csv_file).is_file():
         with open(csv_file, encoding="utf-8-sig", newline="") as source:
-            headers = next(csv.reader(source), [])
+            headers = next(csv.reader(source, delimiter=delimiter), [])
         if len(headers) != len(set(headers)):
             raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
 
@@ -85,10 +93,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file):
+def load_sales_history(csv_file, delimiter=","):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = pd.read_csv(csv_file)
-    _reject_duplicate_headers(csv_file)
+    frame = _read_csv_input(csv_file, delimiter)
     return validate_history(frame)
 
 
@@ -201,9 +208,9 @@ def summarize_forecast(history, predicted_sales):
     return summary
 
 
-def forecast_sales(csv_file, horizon=1):
+def forecast_sales(csv_file, horizon=1, delimiter=","):
     try:
-        history = load_sales_history(csv_file)
+        history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
         forecast = predict_sales_horizon(history, periods=horizon)
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
@@ -260,11 +267,13 @@ def main(argv=None):
     parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
     parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
+    parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
     args = parser.parse_args(argv)
+    delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file)
+            history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
             if args.output:
@@ -276,7 +285,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {})) is not None else 1
 
 
 if __name__ == "__main__":

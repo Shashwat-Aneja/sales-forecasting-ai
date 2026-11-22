@@ -89,3 +89,5 @@ Historical averages and MAE metrics use scaled summation so finite observations 
 Use `--json` for a machine-readable forecast array and diagnostic summary, including rolling backtest metrics when available.
 
 Use `--output forecast.csv` to atomically export all requested forecast periods. It can be combined with `--json`; source-file aliases are rejected and a failed write preserves the previous export.
+
+`--delimiter ";"`, `--delimiter tab` and `--delimiter "|"` support alternate input CSV separators, including quoted fields. Duplicate-header validation uses the selected separator. The default input and all CSV exports remain comma-separated.
