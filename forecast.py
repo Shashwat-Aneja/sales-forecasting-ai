@@ -13,11 +13,19 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _reject_duplicate_headers(csv_file):
+def _read_csv_input(csv_file, delimiter=",", **options):
+    if delimiter not in (",", ";", "\t", "|"):
+        raise ValueError("Unsupported input delimiter.")
+    frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
+    _reject_duplicate_headers(csv_file, delimiter)
+    return frame
+
+
+def _reject_duplicate_headers(csv_file, delimiter=","):
     """Do not let pandas silently rename ambiguous source CSV columns."""
     if isinstance(csv_file, (str, os.PathLike)) and Path(csv_file).is_file():
         with open(csv_file, encoding="utf-8-sig", newline="") as source:
-            headers = next(csv.reader(source), [])
+            headers = next(csv.reader(source, delimiter=delimiter), [])
         if len(headers) != len(set(headers)):
             raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
 
@@ -73,6 +81,8 @@ def validate_history(history, minimum_rows=2):
         raise ValueError("History must contain real numbers, not complex values.")
     for column in ("month", "sales"):
         ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+    if any(pd.api.types.is_complex_dtype(ordered[column]) for column in ordered):
+        raise ValueError("History must contain real numbers, not complex values.")
     if ordered.empty or ordered.isna().any().any():
         raise ValueError("History must contain numeric month and sales values.")
     if not np.isfinite(ordered.to_numpy(dtype=float)).all():
@@ -85,10 +95,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file):
+def load_sales_history(csv_file, delimiter=","):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = pd.read_csv(csv_file)
-    _reject_duplicate_headers(csv_file)
+    frame = _read_csv_input(csv_file, delimiter)
     return validate_history(frame)
 
 
@@ -132,7 +141,7 @@ def predict_sales_horizon(history, periods=1):
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
-def backtest_forecast(history):
+def backtest_forecast(history, max_periods=1000):
     """Evaluate one-period-ahead predictions using expanding historical windows.
 
     At least three observations are required so that the first evaluation has
@@ -140,12 +149,15 @@ def backtest_forecast(history):
     the observation it evaluates. Validate inputs here as callers may invoke
     backtesting directly without going through load_sales_history().
     """
+    if not isinstance(max_periods, int) or isinstance(max_periods, bool) or max_periods < 1:
+        raise ValueError("max_periods must be a positive integer.")
     ordered = validate_history(history, minimum_rows=1)
     if len(ordered) < 3:
         return None
 
     errors = []
-    for split_index in range(2, len(ordered)):
+    first_split = max(2, len(ordered) - max_periods)
+    for split_index in range(first_split, len(ordered)):
         training = ordered.iloc[:split_index]
         held_out = ordered.iloc[split_index]
         model = LinearRegression()
@@ -159,6 +171,8 @@ def backtest_forecast(history):
     absolute_errors = np.abs(np.asarray(errors, dtype=float))
     return {
         "backtest_periods": len(errors),
+        "backtest_available_periods": len(ordered) - 2,
+        "backtest_start_month": float(ordered["month"].iloc[first_split]),
         "backtest_mae": _stable_mean(absolute_errors),
         "backtest_rmse": _stable_rmse(errors),
     }
@@ -201,9 +215,9 @@ def summarize_forecast(history, predicted_sales):
     return summary
 
 
-def forecast_sales(csv_file, horizon=1):
+def forecast_sales(csv_file, horizon=1, delimiter=","):
     try:
-        history = load_sales_history(csv_file)
+        history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
         forecast = predict_sales_horizon(history, periods=horizon)
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
@@ -216,6 +230,8 @@ def forecast_sales(csv_file, horizon=1):
         print(f"Historical fit MAE (in-sample): ₹{summary['historical_fit_mae']:.2f}")
         print(f"Historical fit RMSE (in-sample): ₹{summary['historical_fit_rmse']:.2f}")
         if "backtest_mae" in summary:
+            if summary["backtest_periods"] < summary["backtest_available_periods"]:
+                print(f"Backtest covers the latest {summary['backtest_periods']} of {summary['backtest_available_periods']} eligible periods.")
             print(
                 f"Rolling backtest MAE ({summary['backtest_periods']} periods): "
                 f"₹{summary['backtest_mae']:.2f}"
@@ -260,11 +276,13 @@ def main(argv=None):
     parser.add_argument("--horizon", type=int, default=1, help="Number of future months to forecast")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
     parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
+    parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
     args = parser.parse_args(argv)
+    delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file)
+            history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
             if args.output:
@@ -276,7 +294,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {})) is not None else 1
 
 
 if __name__ == "__main__":
