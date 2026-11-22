@@ -141,7 +141,7 @@ def predict_sales_horizon(history, periods=1):
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
-def backtest_forecast(history):
+def backtest_forecast(history, max_periods=1000):
     """Evaluate one-period-ahead predictions using expanding historical windows.
 
     At least three observations are required so that the first evaluation has
@@ -149,12 +149,15 @@ def backtest_forecast(history):
     the observation it evaluates. Validate inputs here as callers may invoke
     backtesting directly without going through load_sales_history().
     """
+    if not isinstance(max_periods, int) or isinstance(max_periods, bool) or max_periods < 1:
+        raise ValueError("max_periods must be a positive integer.")
     ordered = validate_history(history, minimum_rows=1)
     if len(ordered) < 3:
         return None
 
     errors = []
-    for split_index in range(2, len(ordered)):
+    first_split = max(2, len(ordered) - max_periods)
+    for split_index in range(first_split, len(ordered)):
         training = ordered.iloc[:split_index]
         held_out = ordered.iloc[split_index]
         model = LinearRegression()
@@ -168,6 +171,8 @@ def backtest_forecast(history):
     absolute_errors = np.abs(np.asarray(errors, dtype=float))
     return {
         "backtest_periods": len(errors),
+        "backtest_available_periods": len(ordered) - 2,
+        "backtest_start_month": float(ordered["month"].iloc[first_split]),
         "backtest_mae": _stable_mean(absolute_errors),
         "backtest_rmse": _stable_rmse(errors),
     }
@@ -225,6 +230,8 @@ def forecast_sales(csv_file, horizon=1, delimiter=","):
         print(f"Historical fit MAE (in-sample): ₹{summary['historical_fit_mae']:.2f}")
         print(f"Historical fit RMSE (in-sample): ₹{summary['historical_fit_rmse']:.2f}")
         if "backtest_mae" in summary:
+            if summary["backtest_periods"] < summary["backtest_available_periods"]:
+                print(f"Backtest covers the latest {summary['backtest_periods']} of {summary['backtest_available_periods']} eligible periods.")
             print(
                 f"Rolling backtest MAE ({summary['backtest_periods']} periods): "
                 f"₹{summary['backtest_mae']:.2f}"
