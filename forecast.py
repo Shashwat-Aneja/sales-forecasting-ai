@@ -81,6 +81,8 @@ def validate_history(history, minimum_rows=2):
         raise ValueError("History must contain real numbers, not complex values.")
     for column in ("month", "sales"):
         ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+    if any(pd.api.types.is_complex_dtype(ordered[column]) for column in ordered):
+        raise ValueError("History must contain real numbers, not complex values.")
     if ordered.empty or ordered.isna().any().any():
         raise ValueError("History must contain numeric month and sales values.")
     if not np.isfinite(ordered.to_numpy(dtype=float)).all():
