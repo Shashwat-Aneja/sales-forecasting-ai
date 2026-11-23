@@ -277,14 +277,27 @@ def summarize_forecast(history, predicted_sales):
     return summary
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=","):
+def select_history_window(history, lookback_periods=None):
+    history = validate_history(history)
+    available = len(history)
+    if lookback_periods is not None:
+        if not isinstance(lookback_periods, int) or isinstance(lookback_periods, bool) or lookback_periods < 2:
+            raise ValueError("lookback_periods must be an integer of at least two.")
+        history = history.tail(min(lookback_periods, available)).reset_index(drop=True)
+    return history, available
+
+
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None):
     try:
         history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+        history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon)
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
+        if len(history) < available:
+            print(f"Using latest {len(history)} of {available} observed history periods.")
         summary = summarize_forecast(history, predicted_sales)
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
@@ -341,14 +354,18 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
     parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
     parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
+    parser.add_argument("--lookback-periods", type=int, help="Fit and diagnose only the latest N observed periods")
     args = parser.parse_args(argv)
     delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
             history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+            history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
+            payload["summary"]["training_periods"] = len(history)
+            payload["summary"]["available_history_periods"] = available
             if args.output:
                 export_forecast_csv(result, args.output, args.csv_file)
             if args.json:
@@ -358,7 +375,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {})) is not None else 1
 
 
 if __name__ == "__main__":
