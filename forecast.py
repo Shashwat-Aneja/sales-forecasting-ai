@@ -1,3 +1,4 @@
+import io
 import csv
 import tempfile
 import os
@@ -16,18 +17,67 @@ MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly 
 def _read_csv_input(csv_file, delimiter=",", **options):
     if delimiter not in (",", ";", "\t", "|"):
         raise ValueError("Unsupported input delimiter.")
-    frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
     _reject_duplicate_headers(csv_file, delimiter)
+    frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
     return frame
 
 
 def _reject_duplicate_headers(csv_file, delimiter=","):
-    """Do not let pandas silently rename ambiguous source CSV columns."""
-    if isinstance(csv_file, (str, os.PathLike)) and Path(csv_file).is_file():
+    """Inspect original UTF-8 CSV headers without taking ownership of streams."""
+    def header_lines(source):
+        # csv.reader needs physical lines even for StringIO objects whose default
+        # iterator does not recognize CR-only records. Preserve quoted newlines.
+        pending = ""
+        first = True
+        started = False
+        while True:
+            chars = []
+            while True:
+                char = pending or source.read(1)
+                pending = ""
+                if not char:
+                    break
+                if first:
+                    first = False
+                    if char == "\ufeff":
+                        continue
+                chars.append(char)
+                if char == "\r":
+                    following = source.read(1)
+                    if following == "\n":
+                        chars.append(following)
+                    else:
+                        pending = following
+                    break
+                if char == "\n":
+                    break
+            if not chars:
+                return
+            line = "".join(chars)
+            if not started and not line.strip():
+                continue
+            started = True
+            yield line
+
+    if isinstance(csv_file, (str, os.PathLike)):
+        if not Path(csv_file).is_file():
+            return
         with open(csv_file, encoding="utf-8-sig", newline="") as source:
-            headers = next(csv.reader(source, delimiter=delimiter), [])
-        if len(headers) != len(set(headers)):
-            raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
+            headers = next(csv.reader(header_lines(source), delimiter=delimiter), [])
+    else:
+        if not all(hasattr(csv_file, name) for name in ("read", "seek", "tell")) or (hasattr(csv_file, "seekable") and not csv_file.seekable()):
+            raise ValueError("CSV streams must be seekable for header validation.")
+        position = csv_file.tell()
+        binary = isinstance(csv_file.read(0), bytes)
+        source = io.TextIOWrapper(csv_file, encoding="utf-8-sig", newline="") if binary else csv_file
+        try:
+            headers = next(csv.reader(header_lines(source), delimiter=delimiter), [])
+        finally:
+            if binary:
+                source.detach()
+            csv_file.seek(position)
+    if len(headers) != len(set(headers)):
+        raise ValueError("CSV column names must be unique; duplicate headers are ambiguous.")
 
 
 def _finite_predictions(values):
@@ -156,6 +206,8 @@ def backtest_forecast(history, max_periods=1000):
         return None
 
     errors = []
+    naive_errors = []
+    naive_scale = float(np.max(np.abs(ordered["sales"]))) or 1.0
     first_split = max(2, len(ordered) - max_periods)
     for split_index in range(first_split, len(ordered)):
         training = ordered.iloc[:split_index]
@@ -167,13 +219,23 @@ def backtest_forecast(history, max_periods=1000):
             _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
+        naive_errors.append(float(held_out["sales"]) / naive_scale - float(training["sales"].iloc[-1]) / naive_scale)
 
     absolute_errors = np.abs(np.asarray(errors, dtype=float))
+    naive_mae = _stable_mean(np.abs(naive_errors)) * naive_scale
+    naive_rmse = _stable_rmse(naive_errors) * naive_scale
+    naive_mae = naive_mae if math.isfinite(naive_mae) else None
+    naive_rmse = naive_rmse if math.isfinite(naive_rmse) else None
+    skill = 100 * (1 - _stable_mean(absolute_errors) / naive_mae) if naive_mae is not None and naive_mae > 0 else None
+    skill = skill if skill is not None and math.isfinite(skill) else None
     return {
         "backtest_periods": len(errors),
         "backtest_available_periods": len(ordered) - 2,
         "backtest_start_month": float(ordered["month"].iloc[first_split]),
         "backtest_mae": _stable_mean(absolute_errors),
+        "backtest_naive_mae": naive_mae,
+        "backtest_naive_rmse": naive_rmse,
+        "backtest_mae_skill_percent": skill,
         "backtest_rmse": _stable_rmse(errors),
     }
 
@@ -215,14 +277,27 @@ def summarize_forecast(history, predicted_sales):
     return summary
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=","):
+def select_history_window(history, lookback_periods=None):
+    history = validate_history(history)
+    available = len(history)
+    if lookback_periods is not None:
+        if not isinstance(lookback_periods, int) or isinstance(lookback_periods, bool) or lookback_periods < 2:
+            raise ValueError("lookback_periods must be an integer of at least two.")
+        history = history.tail(min(lookback_periods, available)).reset_index(drop=True)
+    return history, available
+
+
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None):
     try:
         history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+        history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon)
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
+        if len(history) < available:
+            print(f"Using latest {len(history)} of {available} observed history periods.")
         summary = summarize_forecast(history, predicted_sales)
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
@@ -237,6 +312,8 @@ def forecast_sales(csv_file, horizon=1, delimiter=","):
                 f"₹{summary['backtest_mae']:.2f}"
             )
             print(f"Rolling backtest RMSE: ₹{summary['backtest_rmse']:.2f}\n")
+            if summary["backtest_naive_mae"] is not None:
+                print(f"Last-observation baseline backtest MAE: ₹{summary['backtest_naive_mae']:.2f}")
         else:
             print("Rolling backtest: unavailable (requires at least 3 observed periods)\n")
         if horizon > 1:
@@ -277,14 +354,18 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="Print a machine-readable forecast and diagnostic summary")
     parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
     parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
+    parser.add_argument("--lookback-periods", type=int, help="Fit and diagnose only the latest N observed periods")
     args = parser.parse_args(argv)
     delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
             history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+            history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
+            payload["summary"]["training_periods"] = len(history)
+            payload["summary"]["available_history_periods"] = available
             if args.output:
                 export_forecast_csv(result, args.output, args.csv_file)
             if args.json:
@@ -294,7 +375,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {})) is not None else 1
 
 
 if __name__ == "__main__":
