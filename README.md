@@ -95,3 +95,5 @@ Use `--output forecast.csv` to atomically export all requested forecast periods.
 Backtesting defaults to the latest 1,000 eligible held-out periods to bound repeated model fitting on large histories. Results disclose available/evaluated period counts and the first evaluated month. Programmatic callers can pass `backtest_forecast(history, max_periods=N)`. Each fold still trains only on earlier observations.
 
 Seekable caller-owned text and UTF-8 binary CSV streams now receive the same duplicate-header checks as file paths, before pandas can rename ambiguous columns. Validation restores the starting position and leaves caller streams open; nonseekable stream objects are rejected explicitly.
+
+Rolling backtests now evaluate a last-observation baseline on the identical held-out folds, reporting its MAE/RMSE and linear-model MAE skill percentage. Skill is unavailable when baseline MAE is zero or a comparison is not representable; negative skill means the linear model performed worse. These are historical diagnostics, not promises of future accuracy.

@@ -206,6 +206,8 @@ def backtest_forecast(history, max_periods=1000):
         return None
 
     errors = []
+    naive_errors = []
+    naive_scale = float(np.max(np.abs(ordered["sales"]))) or 1.0
     first_split = max(2, len(ordered) - max_periods)
     for split_index in range(first_split, len(ordered)):
         training = ordered.iloc[:split_index]
@@ -217,13 +219,23 @@ def backtest_forecast(history, max_periods=1000):
             _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
         errors.append(float(held_out["sales"]) - prediction)
+        naive_errors.append(float(held_out["sales"]) / naive_scale - float(training["sales"].iloc[-1]) / naive_scale)
 
     absolute_errors = np.abs(np.asarray(errors, dtype=float))
+    naive_mae = _stable_mean(np.abs(naive_errors)) * naive_scale
+    naive_rmse = _stable_rmse(naive_errors) * naive_scale
+    naive_mae = naive_mae if math.isfinite(naive_mae) else None
+    naive_rmse = naive_rmse if math.isfinite(naive_rmse) else None
+    skill = 100 * (1 - _stable_mean(absolute_errors) / naive_mae) if naive_mae is not None and naive_mae > 0 else None
+    skill = skill if skill is not None and math.isfinite(skill) else None
     return {
         "backtest_periods": len(errors),
         "backtest_available_periods": len(ordered) - 2,
         "backtest_start_month": float(ordered["month"].iloc[first_split]),
         "backtest_mae": _stable_mean(absolute_errors),
+        "backtest_naive_mae": naive_mae,
+        "backtest_naive_rmse": naive_rmse,
+        "backtest_mae_skill_percent": skill,
         "backtest_rmse": _stable_rmse(errors),
     }
 
@@ -287,6 +299,8 @@ def forecast_sales(csv_file, horizon=1, delimiter=","):
                 f"₹{summary['backtest_mae']:.2f}"
             )
             print(f"Rolling backtest RMSE: ₹{summary['backtest_rmse']:.2f}\n")
+            if summary["backtest_naive_mae"] is not None:
+                print(f"Last-observation baseline backtest MAE: ₹{summary['backtest_naive_mae']:.2f}")
         else:
             print("Rolling backtest: unavailable (requires at least 3 observed periods)\n")
         if horizon > 1:
