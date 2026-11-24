@@ -273,8 +273,11 @@ def summarize_forecast(history, predicted_sales, backtest_periods=1000):
         trend = "decreasing"
     else:
         trend = "stable"
+    period_span = int(history["month"].max()) - int(history["month"].min()) + 1
     summary = {
         "next_month": latest_month + 1,
+        "history_period_span": period_span,
+        "missing_history_periods": period_span - len(history),
         "historical_average": _stable_mean(history["sales"].to_numpy(dtype=float)),
         "predicted_sales": float(predicted_sales),
         "trend": trend,

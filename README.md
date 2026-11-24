@@ -103,3 +103,5 @@ Rolling backtests now evaluate a last-observation baseline on the identical held
 CSV paths ending in `.gz`, `.bz2`, or `.xz` are supported without unpacking a separate file. Header validation reads the same compression format as pandas and still rejects duplicate columns, including BOM-prefixed quoted headers and alternate delimiters. Archive containers such as ZIP/TAR are outside this feature.
 
 `--backtest-periods N` bounds the number of latest held-out rolling evaluations (default 1000), independently of the training history window. Available/evaluated coverage and first evaluation month remain disclosed. N must be positive.
+
+Forecast summaries disclose `history_period_span` and `missing_history_periods` within the selected observed window. Gaps are not imputed as zero sales; the last-observation comparator remains based on the last available observation, which may be more than one month earlier.
