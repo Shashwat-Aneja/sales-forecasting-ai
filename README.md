@@ -99,3 +99,9 @@ Seekable caller-owned text and UTF-8 binary CSV streams now receive the same dup
 Rolling backtests now evaluate a last-observation baseline on the identical held-out folds, reporting its MAE/RMSE and linear-model MAE skill percentage. Skill is unavailable when baseline MAE is zero or a comparison is not representable; negative skill means the linear model performed worse. These are historical diagnostics, not promises of future accuracy.
 
 `--lookback-periods N` fits forecasts and diagnostics on the latest N observed periods, after normal history validation. JSON summaries disclose selected and available history counts. The default remains all history; observed periods need not be consecutive calendar months.
+
+CSV paths ending in `.gz`, `.bz2`, or `.xz` are supported without unpacking a separate file. Header validation reads the same compression format as pandas and still rejects duplicate columns, including BOM-prefixed quoted headers and alternate delimiters. Archive containers such as ZIP/TAR are outside this feature.
+
+`--backtest-periods N` bounds the number of latest held-out rolling evaluations (default 1000), independently of the training history window. Available/evaluated coverage and first evaluation month remain disclosed. N must be positive.
+
+Forecast summaries disclose `history_period_span` and `missing_history_periods` within the selected observed window. Gaps are not imputed as zero sales; the last-observation comparator remains based on the last available observation, which may be more than one month earlier.
