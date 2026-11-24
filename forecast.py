@@ -250,7 +250,7 @@ def backtest_forecast(history, max_periods=1000):
     }
 
 
-def summarize_forecast(history, predicted_sales):
+def summarize_forecast(history, predicted_sales, backtest_periods=1000):
     """Return transparent context and out-of-sample backtest metrics when possible."""
     history = validate_history(history)
     predicted_sales = float(_finite_predictions([predicted_sales])[0])
@@ -281,7 +281,7 @@ def summarize_forecast(history, predicted_sales):
         "historical_fit_mae": fit_mae,
         "historical_fit_rmse": fit_rmse,
     }
-    backtest = backtest_forecast(history)
+    backtest = backtest_forecast(history, **({"max_periods": backtest_periods} if backtest_periods != 1000 else {}))
     if backtest is not None:
         summary.update(backtest)
     return summary
@@ -297,7 +297,7 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000):
     try:
         history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
@@ -308,7 +308,7 @@ def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None):
         print("Training model using historical data...")
         if len(history) < available:
             print(f"Using latest {len(history)} of {available} observed history periods.")
-        summary = summarize_forecast(history, predicted_sales)
+        summary = summarize_forecast(history, predicted_sales, **({"backtest_periods": backtest_periods} if backtest_periods != 1000 else {}))
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
         print(f"Trend: {summary['trend']}")
@@ -365,7 +365,10 @@ def main(argv=None):
     parser.add_argument("--output", help="Atomically export every forecast period to a CSV different from the input")
     parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
     parser.add_argument("--lookback-periods", type=int, help="Fit and diagnose only the latest N observed periods")
+    parser.add_argument("--backtest-periods", type=int, default=1000, help="Maximum recent held-out periods evaluated by rolling backtesting")
     args = parser.parse_args(argv)
+    if args.backtest_periods < 1:
+        parser.error("--backtest-periods must be positive")
     delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
@@ -373,7 +376,7 @@ def main(argv=None):
             history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon)
-            payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0])}
+            payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
             payload["summary"]["training_periods"] = len(history)
             payload["summary"]["available_history_periods"] = available
             if args.output:
@@ -385,7 +388,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":

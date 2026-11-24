@@ -101,3 +101,5 @@ Rolling backtests now evaluate a last-observation baseline on the identical held
 `--lookback-periods N` fits forecasts and diagnostics on the latest N observed periods, after normal history validation. JSON summaries disclose selected and available history counts. The default remains all history; observed periods need not be consecutive calendar months.
 
 CSV paths ending in `.gz`, `.bz2`, or `.xz` are supported without unpacking a separate file. Header validation reads the same compression format as pandas and still rejects duplicate columns, including BOM-prefixed quoted headers and alternate delimiters. Archive containers such as ZIP/TAR are outside this feature.
+
+`--backtest-periods N` bounds the number of latest held-out rolling evaluations (default 1000), independently of the training history window. Available/evaluated coverage and first evaluation month remain disclosed. N must be positive.
