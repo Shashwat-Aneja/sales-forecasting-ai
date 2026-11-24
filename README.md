@@ -99,3 +99,5 @@ Seekable caller-owned text and UTF-8 binary CSV streams now receive the same dup
 Rolling backtests now evaluate a last-observation baseline on the identical held-out folds, reporting its MAE/RMSE and linear-model MAE skill percentage. Skill is unavailable when baseline MAE is zero or a comparison is not representable; negative skill means the linear model performed worse. These are historical diagnostics, not promises of future accuracy.
 
 `--lookback-periods N` fits forecasts and diagnostics on the latest N observed periods, after normal history validation. JSON summaries disclose selected and available history counts. The default remains all history; observed periods need not be consecutive calendar months.
+
+CSV paths ending in `.gz`, `.bz2`, or `.xz` are supported without unpacking a separate file. Header validation reads the same compression format as pandas and still rejects duplicate columns, including BOM-prefixed quoted headers and alternate delimiters. Archive containers such as ZIP/TAR are outside this feature.
