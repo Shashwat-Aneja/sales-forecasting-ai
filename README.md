@@ -105,3 +105,5 @@ CSV paths ending in `.gz`, `.bz2`, or `.xz` are supported without unpacking a se
 `--backtest-periods N` bounds the number of latest held-out rolling evaluations (default 1000), independently of the training history window. Available/evaluated coverage and first evaluation month remain disclosed. N must be positive.
 
 Forecast summaries disclose `history_period_span` and `missing_history_periods` within the selected observed window. Gaps are not imputed as zero sales; the last-observation comparator remains based on the last available observation, which may be more than one month earlier.
+
+Corrupt compressed bodies, invalid DEFLATE blocks and header-parser limit failures use the normal validation-error path rather than escaping as EOFError, zlib.error or csv.Error. Header inspection restores caller stream position/ownership on these failures. No invalid input is exported.
