@@ -18,14 +18,22 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _read_csv_input(csv_file, delimiter=",", **options):
+def _read_csv_input(csv_file, delimiter=",", max_rows=None, **options):
+    if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000_000):
+        raise ValueError("max_rows must be an integer from 1 to 10000000.")
     if delimiter not in (",", ";", "\t", "|"):
         raise ValueError("Unsupported input delimiter.")
+    if max_rows is not None:
+        if "nrows" in options:
+            raise ValueError("Do not combine nrows and max_rows.")
+        options["nrows"] = max_rows + 1
     _reject_duplicate_headers(csv_file, delimiter)
     try:
         frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
     except (EOFError, lzma.LZMAError, zlib.error, csv.Error) as exc:
         raise ValueError("CSV input is corrupt or incomplete, or its header exceeds parser limits.") from exc
+    if max_rows is not None and len(frame) > max_rows:
+        raise ValueError("CSV input exceeds the configured row limit.")
     return frame
 
 
@@ -158,9 +166,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file, delimiter=","):
+def load_sales_history(csv_file, delimiter=",", max_rows=None):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = _read_csv_input(csv_file, delimiter)
+    frame = _read_csv_input(csv_file, delimiter, **({"max_rows": max_rows} if max_rows is not None else {}))
     return validate_history(frame)
 
 
@@ -303,9 +311,9 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None):
     try:
-        history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+        history = load_sales_history(csv_file, **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon)
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
@@ -372,14 +380,17 @@ def main(argv=None):
     parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
     parser.add_argument("--lookback-periods", type=int, help="Fit and diagnose only the latest N observed periods")
     parser.add_argument("--backtest-periods", type=int, default=1000, help="Maximum recent held-out periods evaluated by rolling backtesting")
+    parser.add_argument("--max-input-rows", type=int, help="Reject CSV files exceeding this raw row budget (1..10000000)")
     args = parser.parse_args(argv)
+    if args.max_input_rows is not None and not 1 <= args.max_input_rows <= 10_000_000:
+        parser.error("--max-input-rows must be from 1 to 10000000")
     if args.backtest_periods < 1:
         parser.error("--backtest-periods must be positive")
     delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+            history = load_sales_history(args.csv_file, **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon)
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
@@ -394,7 +405,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":
