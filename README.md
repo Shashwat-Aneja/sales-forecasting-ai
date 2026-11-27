@@ -113,3 +113,5 @@ Corrupt compressed bodies, invalid DEFLATE blocks and header-parser limit failur
 Use `--max-input-rows 100000` to reject an input file with more than that many data rows before modeling or export. The budget is per file, including comparison/training/scoring inputs, and applies before filtering or aggregation. The default remains unlimited. Values must be integers from 1 to 10,000,000. Only the budget plus one rows are loaded; oversized inputs fail rather than being silently truncated. This is a row limit, not a byte or field-size limit. Python callers can use `max_rows=`.
 
 Forecast metric means retain small cancellation residuals and use an exact fallback when an intermediate sum overflows.
+
+`--non-negative` clamps future and held-out trend predictions to zero and records the policy in JSON. Historical in-sample fit diagnostics remain the raw linear fit. Default forecasts preserve negative values for net-sales histories. This constraint is not a prediction guarantee.
