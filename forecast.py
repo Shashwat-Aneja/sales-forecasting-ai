@@ -113,10 +113,11 @@ def _stable_mean(values):
     values = np.asarray(values, dtype=float)
     if not values.size or not np.isfinite(values).all():
         raise ValueError("Forecast metrics require non-empty finite values.")
-    scale = float(np.max(np.abs(values)))
-    if scale == 0:
-        return 0.0
-    return scale * (math.fsum(float(value) for value in values / scale) / len(values))
+    try:
+        return math.fsum(float(value) for value in values) / len(values)
+    except OverflowError:
+        from fractions import Fraction
+        return float(sum((Fraction.from_float(float(value)) for value in values), Fraction()) / len(values))
 
 
 def _stable_rmse(errors):
