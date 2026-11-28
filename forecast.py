@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import zlib
 import gzip
 import bz2
@@ -69,7 +71,7 @@ def _snapshot_csv_input(csv_file, max_bytes, encoding):
     return io.BytesIO(raw)
 
 
-def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None, **options):
+def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None, expected_sha256=None, **options):
     if encoding not in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         raise ValueError("Unsupported input encoding.")
     if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000_000):
@@ -80,7 +82,14 @@ def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", ma
         if "nrows" in options:
             raise ValueError("Do not combine nrows and max_rows.")
         options["nrows"] = max_rows + 1
-    if max_bytes is not None:
+    if expected_sha256 is not None:
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256):
+            raise ValueError("expected_sha256 must be a 64-character hexadecimal digest.")
+        csv_file = _snapshot_csv_input(csv_file, max_bytes if max_bytes is not None else 64 * 1024 * 1024, encoding)
+        actual = hashlib.sha256(csv_file.getbuffer()).hexdigest()
+        if not hmac.compare_digest(actual, expected_sha256.lower()):
+            raise ValueError("CSV input SHA-256 does not match the expected digest.")
+    elif max_bytes is not None:
         csv_file = _snapshot_csv_input(csv_file, max_bytes, encoding)
     _reject_duplicate_headers(csv_file, delimiter, encoding=encoding)
     try:
@@ -222,9 +231,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None):
+def load_sales_history(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None, expected_sha256=None):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = _read_csv_input(csv_file, delimiter, **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}))
+    frame = _read_csv_input(csv_file, delimiter, **({"expected_sha256": expected_sha256} if expected_sha256 is not None else {}), **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}))
     return validate_history(frame)
 
 
@@ -384,11 +393,11 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False, encoding="utf-8", max_bytes=None):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False, encoding="utf-8", max_bytes=None, expected_sha256=None):
     if not isinstance(non_negative, bool):
         raise ValueError("non_negative must be a boolean.")
     try:
-        history = load_sales_history(csv_file, **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+        history = load_sales_history(csv_file, **({"expected_sha256": expected_sha256} if expected_sha256 is not None else {}), **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon, **({"non_negative": True} if non_negative else {}))
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
@@ -459,6 +468,7 @@ def main(argv=None):
     parser.add_argument("--non-negative", action="store_true", help="Clamp future and held-out trend predictions to zero")
     parser.add_argument("--encoding", choices=("utf-8", "utf-8-sig", "cp1252", "latin-1"), default="utf-8", help="Input CSV text encoding; output encoding remains UTF-8")
     parser.add_argument("--max-input-bytes", type=int, help="Snapshot and bound each decompressed CSV input (1..67108864 bytes)")
+    parser.add_argument("--expect-input-sha256", help="Require the main CSV input to match this SHA-256 of decompressed bytes")
     args = parser.parse_args(argv)
     if args.max_input_bytes is not None and not 1 <= args.max_input_bytes <= 64 * 1024 * 1024:
         parser.error("--max-input-bytes must be from 1 to 67108864")
@@ -470,7 +480,7 @@ def main(argv=None):
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file, **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+            history = load_sales_history(args.csv_file, **({"expected_sha256": args.expect_input_sha256} if args.expect_input_sha256 is not None else {}), **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon, **({"non_negative": True} if args.non_negative else {}))
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"non_negative": True} if args.non_negative else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
@@ -485,7 +495,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, **({"expected_sha256": args.expect_input_sha256} if args.expect_input_sha256 is not None else {}), **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":
