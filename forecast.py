@@ -18,7 +18,9 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _read_csv_input(csv_file, delimiter=",", max_rows=None, **options):
+def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", **options):
+    if encoding not in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        raise ValueError("Unsupported input encoding.")
     if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000_000):
         raise ValueError("max_rows must be an integer from 1 to 10000000.")
     if delimiter not in (",", ";", "\t", "|"):
@@ -27,9 +29,9 @@ def _read_csv_input(csv_file, delimiter=",", max_rows=None, **options):
         if "nrows" in options:
             raise ValueError("Do not combine nrows and max_rows.")
         options["nrows"] = max_rows + 1
-    _reject_duplicate_headers(csv_file, delimiter)
+    _reject_duplicate_headers(csv_file, delimiter, encoding=encoding)
     try:
-        frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
+        frame = pd.read_csv(csv_file, **({"encoding": encoding} if encoding != "utf-8" else {}), **options, **({"sep": delimiter} if delimiter != "," else {}))
     except (EOFError, lzma.LZMAError, zlib.error, csv.Error) as exc:
         raise ValueError("CSV input is corrupt or incomplete, or its header exceeds parser limits.") from exc
     if max_rows is not None and len(frame) > max_rows:
@@ -37,7 +39,7 @@ def _read_csv_input(csv_file, delimiter=",", max_rows=None, **options):
     return frame
 
 
-def _reject_duplicate_headers(csv_file, delimiter=","):
+def _reject_duplicate_headers(csv_file, delimiter=",", encoding="utf-8"):
     """Inspect original UTF-8 CSV headers without taking ownership of streams."""
     def header_lines(source):
         # csv.reader needs physical lines even for StringIO objects whose default
@@ -79,7 +81,7 @@ def _reject_duplicate_headers(csv_file, delimiter=","):
             return
         opener = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}.get(Path(csv_file).suffix, open)
         try:
-            with opener(csv_file, mode="rt", encoding="utf-8-sig", newline="") as source:
+            with opener(csv_file, mode="rt", encoding=encoding, newline="") as source:
                 headers = next(csv.reader(header_lines(source), delimiter=delimiter), [])
         except (EOFError, lzma.LZMAError, zlib.error, csv.Error) as exc:
             raise ValueError("CSV input is corrupt or incomplete, or its header exceeds parser limits.") from exc
@@ -88,7 +90,7 @@ def _reject_duplicate_headers(csv_file, delimiter=","):
             raise ValueError("CSV streams must be seekable for header validation.")
         position = csv_file.tell()
         binary = isinstance(csv_file.read(0), bytes)
-        source = io.TextIOWrapper(csv_file, encoding="utf-8-sig", newline="") if binary else csv_file
+        source = io.TextIOWrapper(csv_file, encoding=encoding, newline="") if binary else csv_file
         try:
             headers = next(csv.reader(header_lines(source), delimiter=delimiter), [])
         except (EOFError, lzma.LZMAError, zlib.error, csv.Error) as exc:
@@ -167,9 +169,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file, delimiter=",", max_rows=None):
+def load_sales_history(csv_file, delimiter=",", max_rows=None, encoding="utf-8"):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = _read_csv_input(csv_file, delimiter, **({"max_rows": max_rows} if max_rows is not None else {}))
+    frame = _read_csv_input(csv_file, delimiter, **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}))
     return validate_history(frame)
 
 
@@ -329,11 +331,11 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False, encoding="utf-8"):
     if not isinstance(non_negative, bool):
         raise ValueError("non_negative must be a boolean.")
     try:
-        history = load_sales_history(csv_file, **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+        history = load_sales_history(csv_file, **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon, **({"non_negative": True} if non_negative else {}))
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
@@ -402,6 +404,7 @@ def main(argv=None):
     parser.add_argument("--backtest-periods", type=int, default=1000, help="Maximum recent held-out periods evaluated by rolling backtesting")
     parser.add_argument("--max-input-rows", type=int, help="Reject CSV files exceeding this raw row budget (1..10000000)")
     parser.add_argument("--non-negative", action="store_true", help="Clamp future and held-out trend predictions to zero")
+    parser.add_argument("--encoding", choices=("utf-8", "utf-8-sig", "cp1252", "latin-1"), default="utf-8", help="Input CSV text encoding; output encoding remains UTF-8")
     args = parser.parse_args(argv)
     if args.max_input_rows is not None and not 1 <= args.max_input_rows <= 10_000_000:
         parser.error("--max-input-rows must be from 1 to 10000000")
@@ -411,7 +414,7 @@ def main(argv=None):
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file, **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+            history = load_sales_history(args.csv_file, **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon, **({"non_negative": True} if args.non_negative else {}))
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"non_negative": True} if args.non_negative else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
@@ -426,7 +429,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":

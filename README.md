@@ -115,3 +115,5 @@ Use `--max-input-rows 100000` to reject an input file with more than that many d
 Forecast metric means retain small cancellation residuals and use an exact fallback when an intermediate sum overflows.
 
 `--non-negative` clamps future and held-out trend predictions to zero and records the policy in JSON. Historical in-sample fit diagnostics remain the raw linear fit. Default forecasts preserve negative values for net-sales histories. This constraint is not a prediction guarantee.
+
+`--encoding utf-8|utf-8-sig|cp1252|latin-1` explicitly selects CSV input decoding, including compressed files and binary streams. Header validation and data parsing use the same encoding; comparison/training/scoring inputs share it. The default remains UTF-8, and export encoding is unchanged. Text streams are already decoded by their caller.
