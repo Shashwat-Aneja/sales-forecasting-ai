@@ -18,14 +18,22 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _read_csv_input(csv_file, delimiter=",", **options):
+def _read_csv_input(csv_file, delimiter=",", max_rows=None, **options):
+    if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000_000):
+        raise ValueError("max_rows must be an integer from 1 to 10000000.")
     if delimiter not in (",", ";", "\t", "|"):
         raise ValueError("Unsupported input delimiter.")
+    if max_rows is not None:
+        if "nrows" in options:
+            raise ValueError("Do not combine nrows and max_rows.")
+        options["nrows"] = max_rows + 1
     _reject_duplicate_headers(csv_file, delimiter)
     try:
         frame = pd.read_csv(csv_file, **options, **({"sep": delimiter} if delimiter != "," else {}))
     except (EOFError, lzma.LZMAError, zlib.error, csv.Error) as exc:
         raise ValueError("CSV input is corrupt or incomplete, or its header exceeds parser limits.") from exc
+    if max_rows is not None and len(frame) > max_rows:
+        raise ValueError("CSV input exceeds the configured row limit.")
     return frame
 
 
@@ -105,10 +113,11 @@ def _stable_mean(values):
     values = np.asarray(values, dtype=float)
     if not values.size or not np.isfinite(values).all():
         raise ValueError("Forecast metrics require non-empty finite values.")
-    scale = float(np.max(np.abs(values)))
-    if scale == 0:
-        return 0.0
-    return scale * (math.fsum(float(value) for value in values / scale) / len(values))
+    try:
+        return math.fsum(float(value) for value in values) / len(values)
+    except OverflowError:
+        from fractions import Fraction
+        return float(sum((Fraction.from_float(float(value)) for value in values), Fraction()) / len(values))
 
 
 def _stable_rmse(errors):
@@ -158,9 +167,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file, delimiter=","):
+def load_sales_history(csv_file, delimiter=",", max_rows=None):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = _read_csv_input(csv_file, delimiter)
+    frame = _read_csv_input(csv_file, delimiter, **({"max_rows": max_rows} if max_rows is not None else {}))
     return validate_history(frame)
 
 
@@ -174,8 +183,10 @@ def _predict_scaled_trend(model, months):
     return _finite_predictions(model.predict(months) * model._forecast_target_scale)
 
 
-def predict_next_sales(df):
+def predict_next_sales(df, non_negative=False):
     """Fit a linear trend and predict the period after the latest observed month."""
+    if not isinstance(non_negative, bool):
+        raise ValueError("non_negative must be a boolean.")
     ordered = validate_history(df)
     model = LinearRegression()
     origin = float(ordered["month"].iloc[0])
@@ -183,11 +194,14 @@ def predict_next_sales(df):
     if float(ordered["month"].iloc[-1]) >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
     next_month = float(ordered["month"].iloc[-1]) + 1
-    return float(_finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [next_month - origin]})))[0])
+    value = float(_finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [next_month - origin]})))[0])
+    return max(0.0, value) if non_negative else value
 
 
-def predict_sales_horizon(history, periods=1):
+def predict_sales_horizon(history, periods=1, non_negative=False):
     """Predict one or more future monthly sales values from the fitted trend."""
+    if not isinstance(non_negative, bool):
+        raise ValueError("non_negative must be a boolean.")
     if not isinstance(periods, int) or isinstance(periods, bool) or periods < 1:
         raise ValueError("periods must be a positive integer.")
     if periods > MAX_FORECAST_PERIODS:
@@ -201,10 +215,12 @@ def predict_sales_horizon(history, periods=1):
     first_future_month = int(ordered["month"].iloc[-1]) + 1
     future_months = np.array([first_future_month + offset for offset in range(periods)], dtype=float)
     predictions = _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": future_months - origin})))
+    if non_negative:
+        predictions = np.maximum(predictions, 0)
     return pd.DataFrame({"month": future_months, "predicted_sales": predictions.astype(float)})
 
 
-def backtest_forecast(history, max_periods=1000):
+def backtest_forecast(history, max_periods=1000, non_negative=False):
     """Evaluate one-period-ahead predictions using expanding historical windows.
 
     At least three observations are required so that the first evaluation has
@@ -212,6 +228,8 @@ def backtest_forecast(history, max_periods=1000):
     the observation it evaluates. Validate inputs here as callers may invoke
     backtesting directly without going through load_sales_history().
     """
+    if not isinstance(non_negative, bool):
+        raise ValueError("non_negative must be a boolean.")
     if not isinstance(max_periods, int) or isinstance(max_periods, bool) or max_periods < 1:
         raise ValueError("max_periods must be a positive integer.")
     ordered = validate_history(history, minimum_rows=1)
@@ -231,6 +249,8 @@ def backtest_forecast(history, max_periods=1000):
         prediction = float(
             _finite_predictions(_predict_scaled_trend(model, pd.DataFrame({"month": [float(held_out["month"]) - origin]})))[0]
         )
+        if non_negative:
+            prediction = max(0.0, prediction)
         errors.append(float(held_out["sales"]) - prediction)
         naive_errors.append(float(held_out["sales"]) / naive_scale - float(training["sales"].iloc[-1]) / naive_scale)
 
@@ -253,10 +273,14 @@ def backtest_forecast(history, max_periods=1000):
     }
 
 
-def summarize_forecast(history, predicted_sales, backtest_periods=1000):
+def summarize_forecast(history, predicted_sales, backtest_periods=1000, non_negative=False):
     """Return transparent context and out-of-sample backtest metrics when possible."""
+    if not isinstance(non_negative, bool):
+        raise ValueError("non_negative must be a boolean.")
     history = validate_history(history)
     predicted_sales = float(_finite_predictions([predicted_sales])[0])
+    if non_negative:
+        predicted_sales = max(0.0, predicted_sales)
     latest_month = int(history["month"].max())
     if latest_month >= MAX_SAFE_MONTH_INDEX:
         raise ValueError("Next month exceeds exact floating-point integer precision.")
@@ -287,7 +311,9 @@ def summarize_forecast(history, predicted_sales, backtest_periods=1000):
         "historical_fit_mae": fit_mae,
         "historical_fit_rmse": fit_rmse,
     }
-    backtest = backtest_forecast(history, **({"max_periods": backtest_periods} if backtest_periods != 1000 else {}))
+    if non_negative:
+        summary["forecast_policy"] = "non_negative"
+    backtest = backtest_forecast(history, **({"non_negative": True} if non_negative else {}), **({"max_periods": backtest_periods} if backtest_periods != 1000 else {}))
     if backtest is not None:
         summary.update(backtest)
     return summary
@@ -303,18 +329,20 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False):
+    if not isinstance(non_negative, bool):
+        raise ValueError("non_negative must be a boolean.")
     try:
-        history = load_sales_history(csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+        history = load_sales_history(csv_file, **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
-        forecast = predict_sales_horizon(history, periods=horizon)
+        forecast = predict_sales_horizon(history, periods=horizon, **({"non_negative": True} if non_negative else {}))
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
         print("\n📈 Sales Forecasting AI")
         print("-----------------------")
         print("Training model using historical data...")
         if len(history) < available:
             print(f"Using latest {len(history)} of {available} observed history periods.")
-        summary = summarize_forecast(history, predicted_sales, **({"backtest_periods": backtest_periods} if backtest_periods != 1000 else {}))
+        summary = summarize_forecast(history, predicted_sales, **({"non_negative": True} if non_negative else {}), **({"backtest_periods": backtest_periods} if backtest_periods != 1000 else {}))
         print(f"Predicted sales for next period: ₹{predicted_sales:.2f}")
         print(f"Historical average: ₹{summary['historical_average']:.2f}")
         print(f"Trend: {summary['trend']}")
@@ -372,17 +400,21 @@ def main(argv=None):
     parser.add_argument("--delimiter", choices=(",", ";", "tab", "|"), default=",", help="Input CSV delimiter; exports remain comma-separated")
     parser.add_argument("--lookback-periods", type=int, help="Fit and diagnose only the latest N observed periods")
     parser.add_argument("--backtest-periods", type=int, default=1000, help="Maximum recent held-out periods evaluated by rolling backtesting")
+    parser.add_argument("--max-input-rows", type=int, help="Reject CSV files exceeding this raw row budget (1..10000000)")
+    parser.add_argument("--non-negative", action="store_true", help="Clamp future and held-out trend predictions to zero")
     args = parser.parse_args(argv)
+    if args.max_input_rows is not None and not 1 <= args.max_input_rows <= 10_000_000:
+        parser.error("--max-input-rows must be from 1 to 10000000")
     if args.backtest_periods < 1:
         parser.error("--backtest-periods must be positive")
     delimiter = "\t" if args.delimiter == "tab" else args.delimiter
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file, **({"delimiter": delimiter} if delimiter != "," else {}))
+            history = load_sales_history(args.csv_file, **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
-            result = predict_sales_horizon(history, args.horizon)
-            payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
+            result = predict_sales_horizon(history, args.horizon, **({"non_negative": True} if args.non_negative else {}))
+            payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"non_negative": True} if args.non_negative else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
             payload["summary"]["training_periods"] = len(history)
             payload["summary"]["available_history_periods"] = available
             if args.output:
@@ -394,7 +426,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":
