@@ -18,7 +18,58 @@ MAX_SAFE_MONTH_INDEX = 2**53 - 1
 MAX_FORECAST_PERIODS = 1200  # Bound memory use to at most 100 years of monthly output.
 
 
-def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", **options):
+def _snapshot_csv_input(csv_file, max_bytes, encoding):
+    """Snapshot bounded decompressed CSV bytes without consuming caller streams."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= 64 * 1024 * 1024:
+        raise ValueError("max_bytes must be an integer from 1 to 67108864.")
+    def read_complete(source):
+        chunks = []
+        units = 0
+        kind = None
+        while units <= max_bytes:
+            chunk = source.read(min(65536, max_bytes + 1 - units))
+            if not isinstance(chunk, (str, bytes)):
+                raise ValueError("CSV stream read must return bytes or text.")
+            if kind is not None and type(chunk) is not kind:
+                raise ValueError("CSV stream read type must be consistent.")
+            kind = type(chunk)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            units += len(chunk)
+        # Encode text once so codecs with BOMs do not insert one per chunk.
+        raw = ("".join(chunks).encode(encoding) if kind is str else b"".join(chunks))
+        return raw
+    if isinstance(csv_file, (str, os.PathLike)):
+        path = Path(csv_file)
+        if not path.is_file():
+            raise ValueError("Bounded CSV input must be a local regular file or seekable stream.")
+        opener = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}.get(path.suffix.lower(), open)
+        try:
+            with opener(path, "rb") as source:
+                raw = read_complete(source)
+        except (EOFError, lzma.LZMAError, zlib.error) as exc:
+            raise ValueError("CSV input is corrupt or incomplete.") from exc
+    else:
+        if not all(hasattr(csv_file, name) for name in ("read", "seek", "tell")) or (hasattr(csv_file, "seekable") and not csv_file.seekable()):
+            raise ValueError("Bounded CSV streams must be seekable.")
+        position = csv_file.tell()
+        try:
+            raw = read_complete(csv_file)
+        except (EOFError, lzma.LZMAError, zlib.error) as exc:
+            raise ValueError("CSV input is corrupt or incomplete.") from exc
+        finally:
+            csv_file.seek(position)
+        if isinstance(raw, str):
+            raw = raw.encode(encoding)
+        if not isinstance(raw, bytes):
+            raise ValueError("CSV stream read must return bytes or text.")
+    if len(raw) > max_bytes:
+        raise ValueError("CSV input exceeds the configured decompressed byte limit.")
+    return io.BytesIO(raw)
+
+
+def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None, **options):
     if encoding not in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         raise ValueError("Unsupported input encoding.")
     if max_rows is not None and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= 10_000_000):
@@ -29,6 +80,8 @@ def _read_csv_input(csv_file, delimiter=",", max_rows=None, encoding="utf-8", **
         if "nrows" in options:
             raise ValueError("Do not combine nrows and max_rows.")
         options["nrows"] = max_rows + 1
+    if max_bytes is not None:
+        csv_file = _snapshot_csv_input(csv_file, max_bytes, encoding)
     _reject_duplicate_headers(csv_file, delimiter, encoding=encoding)
     try:
         frame = pd.read_csv(csv_file, **({"encoding": encoding} if encoding != "utf-8" else {}), **options, **({"sep": delimiter} if delimiter != "," else {}))
@@ -169,9 +222,9 @@ def validate_history(history, minimum_rows=2):
     return ordered.sort_values("month").reset_index(drop=True)
 
 
-def load_sales_history(csv_file, delimiter=",", max_rows=None, encoding="utf-8"):
+def load_sales_history(csv_file, delimiter=",", max_rows=None, encoding="utf-8", max_bytes=None):
     """Load and validate monthly sales data, returning it in month order."""
-    frame = _read_csv_input(csv_file, delimiter, **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}))
+    frame = _read_csv_input(csv_file, delimiter, **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}))
     return validate_history(frame)
 
 
@@ -331,11 +384,11 @@ def select_history_window(history, lookback_periods=None):
     return history, available
 
 
-def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False, encoding="utf-8"):
+def forecast_sales(csv_file, horizon=1, delimiter=",", lookback_periods=None, backtest_periods=1000, max_rows=None, non_negative=False, encoding="utf-8", max_bytes=None):
     if not isinstance(non_negative, bool):
         raise ValueError("non_negative must be a boolean.")
     try:
-        history = load_sales_history(csv_file, **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+        history = load_sales_history(csv_file, **({"max_bytes": max_bytes} if max_bytes is not None else {}), **({"encoding": encoding} if encoding != "utf-8" else {}), **({"max_rows": max_rows} if max_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
         history, available = select_history_window(history, lookback_periods)
         forecast = predict_sales_horizon(history, periods=horizon, **({"non_negative": True} if non_negative else {}))
         predicted_sales = float(forecast["predicted_sales"].iloc[0])
@@ -405,7 +458,10 @@ def main(argv=None):
     parser.add_argument("--max-input-rows", type=int, help="Reject CSV files exceeding this raw row budget (1..10000000)")
     parser.add_argument("--non-negative", action="store_true", help="Clamp future and held-out trend predictions to zero")
     parser.add_argument("--encoding", choices=("utf-8", "utf-8-sig", "cp1252", "latin-1"), default="utf-8", help="Input CSV text encoding; output encoding remains UTF-8")
+    parser.add_argument("--max-input-bytes", type=int, help="Snapshot and bound each decompressed CSV input (1..67108864 bytes)")
     args = parser.parse_args(argv)
+    if args.max_input_bytes is not None and not 1 <= args.max_input_bytes <= 64 * 1024 * 1024:
+        parser.error("--max-input-bytes must be from 1 to 67108864")
     if args.max_input_rows is not None and not 1 <= args.max_input_rows <= 10_000_000:
         parser.error("--max-input-rows must be from 1 to 10000000")
     if args.backtest_periods < 1:
@@ -414,7 +470,7 @@ def main(argv=None):
     if args.json or args.output:
         import json
         try:
-            history = load_sales_history(args.csv_file, **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
+            history = load_sales_history(args.csv_file, **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}))
             history, available = select_history_window(history, args.lookback_periods)
             result = predict_sales_horizon(history, args.horizon, **({"non_negative": True} if args.non_negative else {}))
             payload = {"forecast": result.to_dict(orient="records"), "summary": summarize_forecast(history, result["predicted_sales"].iloc[0], **({"non_negative": True} if args.non_negative else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {}))}
@@ -429,7 +485,7 @@ def main(argv=None):
             return 0
         except (OSError, pd.errors.ParserError, ValueError) as exc:
             parser.exit(1, f"Error: {exc}\n")
-    return 0 if forecast_sales(args.csv_file, **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
+    return 0 if forecast_sales(args.csv_file, **({"max_bytes": args.max_input_bytes} if args.max_input_bytes is not None else {}), **({"encoding": args.encoding} if args.encoding != "utf-8" else {}), horizon=args.horizon, **({"non_negative": True} if args.non_negative else {}), **({"max_rows": args.max_input_rows} if args.max_input_rows is not None else {}), **({"delimiter": delimiter} if delimiter != "," else {}), **({"lookback_periods": args.lookback_periods} if args.lookback_periods is not None else {}), **({"backtest_periods": args.backtest_periods} if args.backtest_periods != 1000 else {})) is not None else 1
 
 
 if __name__ == "__main__":
